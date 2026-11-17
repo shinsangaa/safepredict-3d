@@ -1,0 +1,35 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.12.7, pytest-9.2.0, pluggy-1.7.0 -- C:\safepredict-3d\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\safepredict-3d
+plugins: anyio-4.16.0
+collecting ... collected 26 items
+
+test/test_risk_engine.py::test_initial_values_match_manual_check[S01] PASSED [  3%]
+test/test_risk_engine.py::test_initial_values_match_manual_check[S02] PASSED [  7%]
+test/test_risk_engine.py::test_initial_values_match_manual_check[S03] PASSED [ 11%]
+test/test_risk_engine.py::test_initial_values_match_manual_check[S04] PASSED [ 15%]
+test/test_risk_engine.py::test_initial_values_match_manual_check[S05] PASSED [ 19%]
+test/test_risk_engine.py::test_initial_values_match_manual_check[S06] PASSED [ 23%]
+test/test_risk_engine.py::test_initial_values_match_rounded_numbers_in_doc PASSED [ 26%]
+test/test_risk_engine.py::test_01_parallel_same_velocity PASSED          [ 30%]
+test/test_risk_engine.py::test_02_already_inside_collision_radius[0.0] PASSED [ 34%]
+test/test_risk_engine.py::test_02_already_inside_collision_radius[0.5] PASSED [ 38%]
+test/test_risk_engine.py::test_02_already_inside_collision_radius[1.0] PASSED [ 42%]
+test/test_risk_engine.py::test_03_moving_apart PASSED                    [ 46%]
+test/test_risk_engine.py::test_04_s04_crossing PASSED                    [ 50%]
+test/test_risk_engine.py::test_05_s03_head_on PASSED                     [ 53%]
+test/test_risk_engine.py::test_06_s05_right_after_turn PASSED            [ 57%]
+test/test_risk_engine.py::test_07_s05_after_turn PASSED                  [ 61%]
+test/test_risk_engine.py::test_08_threshold_boundaries PASSED            [ 65%]
+test/test_risk_engine.py::test_09_invalid_input_is_rejected[x-nan] PASSED [ 69%]
+test/test_risk_engine.py::test_09_invalid_input_is_rejected[y-inf] PASSED [ 73%]
+test/test_risk_engine.py::test_09_invalid_input_is_rejected[speed--inf] PASSED [ 76%]
+test/test_risk_engine.py::test_09_invalid_input_is_rejected[speed--1.0] PASSED [ 80%]
+test/test_risk_engine.py::test_09_invalid_input_is_rejected[x-None] PASSED [ 84%]
+test/test_risk_engine.py::test_09_invalid_input_is_rejected[heading-nan] PASSED [ 88%]
+test/test_risk_engine.py::test_09_missing_field_is_rejected PASSED       [ 92%]
+test/test_risk_engine.py::test_10_same_input_same_output PASSED          [ 96%]
+test/test_risk_engine.py::test_s06_current_cri_jumps_to_critical PASSED  [100%]
+
+============================= 26 passed in 0.03s ==============================
