@@ -36,8 +36,7 @@ class WarehouseSimulator:
         if self.scenario == "safe":
             # [시나리오 1: 정상 주행] 서로 멀리 떨어져서 평행하게 지나감
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=2.0, z=0.0, speed=3.0, heading=0.0)
-            self.worker = EntityState("WK_01", "worker", 0.0, x=20.0, y=10.0, z=0.0, speed=1.2, heading=math.pi)
-            
+            self.worker = EntityState("WK_01", "worker", 0.0, x=20.0, y=10.0, z=0.0, speed=1.2, heading=math.pi)  
         elif self.scenario == "collision":
             # [시나리오 2: 교차 충돌 위험] (15, 10) 지점에서 약 5초 후 만나는 경로
             # 지게차: (0, 10)에서 동쪽(0 rad)으로 3.0 m/s 이동 -> 5초 뒤 (15, 10) 도달
@@ -50,6 +49,21 @@ class WarehouseSimulator:
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=6.0, y=4.0, z=0.0, speed=2.8, heading=0.0)
             # 작업자: 통로 안쪽 (12.5, 12.0)에서 남쪽으로 걸어 내려오는 중
             self.worker = EntityState("WK_01", "worker", 0.0, x=12.5, y=12.5, z=0.0, speed=1.1, heading=-math.pi / 2)
+        elif self.scenario == "parallel":
+            self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
+            self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=8.0, z=0.0, speed=1.0, heading=0.0)
+        elif self.scenario == "stop_approach":
+            self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=0.0, heading=0.0)
+            self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)
+        elif self.scenario == "head_on":
+            self.forklift = EntityState("FL_01", "forkllift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
+            self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)
+        elif self.scenario == "crossing":
+            self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
+            self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=10.0, z=0.0, speed=2.0, heading=-math.pi / 2)
+        elif self.scenario == "retreat":
+            self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=0.0, heading=0.0)
+            self.worker = EntityState("WK_01", "worker", 0.0, x=4.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)    
         else:
             raise ValueError("지원하지 않는 시나리오입니다. 'safe', 'collision', 'corner_turn' 중 선택하세요.")
 
@@ -71,6 +85,10 @@ class WarehouseSimulator:
         self.worker.x += self.worker.speed * math.cos(self.worker.heading) * self.dt
         self.worker.y += self.worker.speed * math.sin(self.worker.heading) * self.dt
         self.worker.timestamp = self.current_time
+
+        # S05: 2.0초 시점부터 작업자가 +x 방향으로 돌아선다
+        if self.scenario == "retreat" and self.current_time >= 2.0:
+            self.worker.heading = 0.0
         
         return {
             "timestamp": self.current_time,
