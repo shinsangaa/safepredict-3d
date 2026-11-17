@@ -132,7 +132,7 @@ if st.session_state.is_running or step_clicked:
                 "시간(s)": f"{frame['timestamp']:.1f}s",
                 "위험단계": f"🚨 {status}" if status == "CRITICAL" else f"⚠️ {status}",
                 "통합 CRI": total_cri,
-                "현재 거리(m)": curr_risk["distance"],
+                "현재 거리(m)": round(curr_risk["distance"], 2),
                 "예측 최소거리(m)": future_risk["min_future_dist"],
                 "사유": "월드모델 궤적 교차 예측" if future_risk["max_pred_cri"] > curr_risk["cri"] else "근접/직접 충돌 경로"
             })

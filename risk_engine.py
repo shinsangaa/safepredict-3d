@@ -1,23 +1,40 @@
 import math
 from typing import Dict, Tuple
 
+COLLISION_RADIUS_M = 1.0 # 충돌 판정 거리
+SAFE_RADIUS_BASE_M = 3.0 # 정지한 지게차의 안전 버블 반경
+SAFE_RADIUS_SPEED_FACTOR_S = 0.5 # 지게차 속력 1m/s당 버블 증가량
+TTC_SCORE_START_S = 6.0 # TTC 점수가 0에서 오르기 시작하는 시간
+TTC_SCORE_FULL_S = 1.0 # TTC 점수가 1이 되는 시간
+WARNING_THRESHOLD = 0.50
+CRITICAL_THRESHOLD = 0.85
+EPSILON = 1e-6 # 사실상 0을 판단하는 허용 오차
+
+def classify_level(cri: float) -> str:
+    if cri >= CRITICAL_THRESHOLD:
+        return "CRITICAL"
+    elif cri >= WARNING_THRESHOLD:
+        return "WARNING"
+    else:
+        return "SAFE"
+
 class CollisionRiskEngine:
     """
     두 객체(지게차, 작업자)의 위치, 속도, 방향을 입력받아
     현재 거리, DCPA(최근접 거리), TTC(예상 충돌 시간), CRI(충돌 위험 지수)를 계산하는 엔진
     """
-    def __init__(self, safe_distance_threshold: float = 3.0, safe_time_threshold: float = 4.0):
-        """
-        :param safe_distance_threshold: 위험으로 간주하는 최소 근접 거리 기준 (미터)
-        :param safe_time_threshold: 위험으로 간주하는 최소 여유 시간 기준 (초)
-        """
-        self.d_thresh = safe_distance_threshold
-        self.t_thresh = safe_time_threshold
 
     def calculate_risk(self, obj1: Dict, obj2: Dict) -> Dict:
         """
         두 객체의 상태 딕셔너리를 받아 위험 지표를 계산하여 반환
         """
+        for name, obj in (("forklift", obj1), ("worker", obj2)):
+            for key in ("x", "y", "speed", "heading"):
+                value = obj.get(key)
+                if not isinstance(value, (int, float)) or not math.isfinite(value):
+                    raise ValueError(f"{name}의 '{key}' 값이 올바르지 않습니다: {value}")
+            if obj["speed"] < 0:
+                raise ValueError(f"{name}의 속력이 음수입니다: {obj['speed']}")
         # 1. 상대 위치 벡터 (dP = P2 - P1)
         dx = obj2["x"] - obj1["x"]
         dy = obj2["y"] - obj1["y"]
@@ -34,8 +51,14 @@ class CollisionRiskEngine:
         dvy = v2y - v1y
         rel_speed_sq = dvx**2 + dvy**2  # 상대 속력의 제곱
 
+        relative_speed = math.sqrt(rel_speed_sq)
+        if current_dist <= EPSILON:
+            closing_speed = 0.0 # 중심이 겹치면 아래 나눗셈의 분모가 0이 됨
+        else:
+            closing_speed = -(dx*dvx + dy*dvy) / current_dist
+
         # 4. TCPA (최근접 도달 시간) 및 DCPA (최근접 거리) 계산
-        if rel_speed_sq < 1e-6:
+        if relative_speed <= EPSILON:
             # 두 객체가 같은 속도와 방향으로 나란히 이동 중인 경우
             tcpa = 0.0
             dcpa = current_dist
@@ -55,60 +78,57 @@ class CollisionRiskEngine:
                 dcpa = math.hypot(future_dx, future_dy)
 
         # 5. TTC (Time-To-Collision, 예상 충돌 시간) 정의
-        # 최근접 거리(DCPA)가 안전 반경(1.5m) 이내로 들어올 때만 유효한 충돌 시간으로 인정
-        collision_radius = 1.5
-        if tcpa > 0 and dcpa <= collision_radius:
-            ttc = tcpa
+        # |r + vt|=1m 가 되는 t를 구하는 2차 방정식 a*t² + b*t + c = 0
+        a = rel_speed_sq
+        b = 2 * (dx * dvx + dy * dvy)
+        c = current_dist**2 - COLLISION_RADIUS_M**2
+        D = b**2 - 4*a*c
+
+        if c <= 0:
+            ttc = 0.0 # 이미 1m 구역 안 (이 검사가 반드시 첫 번째)
+        elif relative_speed <= EPSILON: # 구역 밖인데 상대 이동이 없음
+            ttc = None
+        elif D < 0:
+            ttc = None # 1m 원과 만나지 않고 지나감
         else:
-            ttc = float('inf')  # 충돌 경로가 아님 (무한대)
+            t1 = (-b - math.sqrt(D)) / (2 * a) # 원에 들어가는 시각
+            t2 = (-b + math.sqrt(D)) / (2 * a) # 원에서 나오는 시각
+            future_roots = [t for t in (t1, t2) if t >= 0]
+            ttc = min(future_roots) if future_roots else None
+
 
         # 6. CRI (Collision Risk Index, 0.0 ~ 1.0) 종합 점수 산출
-        cri = self._compute_cri(current_dist, dcpa, ttc)
+        safe_radius = SAFE_RADIUS_BASE_M + SAFE_RADIUS_SPEED_FACTOR_S * obj1["speed"] # obj1=지게차
+        cri = self._compute_cri(current_dist, ttc, safe_radius)
 
         # 7. 기획서 기준 위험 단계 판정
-        if cri >= 0.85:
-            status = "CRITICAL"  # 위험
-        elif cri >= 0.50:
-            status = "WARNING"   # 주의
-        else:
-            status = "SAFE"      # 정상
+        status = classify_level(cri)
 
         return {
-            "distance": round(current_dist, 2),
-            "dcpa": round(dcpa, 2),
-            "ttc": round(ttc, 2) if ttc != float('inf') else -1.0,  # -1.0은 충돌 없음 표시
-            "cri": round(cri, 3),
+            "distance": current_dist,
+            "relative_speed": relative_speed,
+            "closing_speed": closing_speed,
+            "t_cpa": tcpa,
+            "dcpa": dcpa,
+            "ttc": ttc,         # 충돌 예상 없으면 None
+            "collision_predicted": ttc is not None,
+            "safe_radius": safe_radius,
+            "cri": cri,
             "status": status
         }
 
-    def _compute_cri(self, dist: float, dcpa: float, ttc: float) -> float:
-        """
-        거리, DCPA, TTC를 조합하여 0.0 ~ 1.0 사이의 위험 지수(CRI) 계산
-        """
-        # 이미 매우 가까운 경우 즉각 최고 위험 부여
-        if dist < 1.5:
-            return 1.0
-
-        # 거리 기반 위험도 (가까울수록 1에 수렴)
-        dist_risk = max(0.0, min(1.0, 1.0 - (dist - 1.5) / 10.0))
-
-        # DCPA 기반 위험도 (예상 최근접 거리가 좁을수록 위험)
-        dcpa_risk = max(0.0, min(1.0, 1.0 - (dcpa / self.d_thresh)))
-
-        # TTC 기반 위험도 (충돌까지 남은 시간이 짧을수록 위험)
-        if ttc == float('inf') or ttc > self.t_thresh:
-            ttc_risk = 0.0
+    def _compute_cri(self, dist: float, ttc, safe_radius: float) -> float:
+        # TTC 점수: 6초 -> 0점, 1초 -> 1점
+        if ttc is None:
+            s_ttc = 0.0
         else:
-            ttc_risk = max(0.0, min(1.0, 1.0 - (ttc / self.t_thresh)))
+            s_ttc = max(0.0, min(1.0, (TTC_SCORE_START_S - ttc) / (TTC_SCORE_START_S - TTC_SCORE_FULL_S)))
 
-        # 가중 평균으로 최종 CRI 도출 (미래 예측 지표인 TTC와 DCPA에 높은 가중치 부여)
-        if ttc != float('inf'):
-            cri = 0.2 * dist_risk + 0.3 * dcpa_risk + 0.5 * ttc_risk
-        else:
-            # 충돌 경로가 아니더라도 물리적으로 너무 가까우면 주의 경보 발생
-            cri = 0.6 * dist_risk + 0.4 * dcpa_risk
+        # 거리 점수: 버블 경계 -> 0점, 1m -> 1점
+        s_distance = max(0.0, min(1.0, (safe_radius - dist) / (safe_radius - COLLISION_RADIUS_M)))
 
-        return min(1.0, cri)
+        # 둘 중 하나라도 위험하면 위험 -> 평균이 아니라 큰 값
+        return max(s_ttc, s_distance)
 
 # 1단계 시뮬레이터와 2단계 위험 엔진 연동 테스트
 if __name__ == "__main__":
@@ -124,7 +144,7 @@ if __name__ == "__main__":
 
         # 0.5초마다 위험도 판정 결과 출력
         if int(frame["timestamp"] * 10) % 5 == 0:
-            ttc_str = f"{risk_result['ttc']:4.1f}s" if risk_result['ttc'] >= 0 else " 없음 "
+            ttc_str = f"{risk_result['ttc']:4.1f}s" if risk_result['ttc'] is not None else " 없음 "
             print(f"[{frame['timestamp']:4.1f}s] "
                   f"거리: {risk_result['distance']:5.2f}m | "
                   f"DCPA: {risk_result['dcpa']:4.2f}m | "
