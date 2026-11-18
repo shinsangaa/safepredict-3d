@@ -20,7 +20,7 @@ st.set_page_config(
 @st.cache_resource
 def load_world_model():
     engine = IndustrialWorldEngine(dt=0.1)
-    engine.train_quick_dynamics(epochs=120)
+    engine.train_quick_dynamics()
     return engine
 
 world_engine = load_world_model()

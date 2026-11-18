@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+TRAIN_EPOCHS = 300 # 학습 반복 횟수 (app.py, eval_prediction.py가 함께 사용)
+
 class DynamicsWorldModel(nn.Module):
     """
     [산업현장 특화 경량 월드 모델]
@@ -40,15 +42,16 @@ class IndustrialWorldEngine:
     def __init__(self, dt: float = 0.1):
         self.dt = dt
         self.device = torch.device("cpu")  # Streamlit Cloud 등 경량 배포 호환을 위해 CPU 사용
+        torch.manual_seed(42) # 신경망 초기 가중치를 매번 같게 고정 (모델 생성 전에 호출해야 함)
         self.model = DynamicsWorldModel().to(self.device)
         self.is_trained = False
 
-    def train_quick_dynamics(self, epochs: int = 120):
+    def train_quick_dynamics(self, epochs: int = TRAIN_EPOCHS):
         """
         물리적 운동 방정식(직진, 가감속, 코너 선회) 기반 가상 전이 데이터를 생성하여
         월드 모델이 공간 동역학(State Transition)을 빠르게 습득하도록 학습
         """
-        torch.manual_seed(42)
+        torch.manual_seed(42) # 랜덤 값을 매번 같게 고정
         random.seed(42)
 
         num_samples = 4000
@@ -91,10 +94,10 @@ class IndustrialWorldEngine:
         self.model.train()
         for _ in range(epochs):
             optimizer.zero_grad()
-            pred_ns = self.model(s_tensor, a_tensor)
-            loss = criterion(pred_ns, ns_tensor)
+            pred_ns = self.model(s_tensor, a_tensor) # 4,000개 전부 예측
+            loss = criterion(pred_ns, ns_tensor) # 정답과 얼마나 다른지 계산
             loss.backward()
-            optimizer.step()
+            optimizer.step() # 덜 틀리도록 가중치를 조금 고침
 
         self.model.eval()
         self.is_trained = True
@@ -179,7 +182,7 @@ if __name__ == "__main__":
     print("=== [STEP 3] 월드 모델 학습 및 코너 급회전 사각지대 선제 예측 테스트 ===")
     world_engine = IndustrialWorldEngine()
     print("1. 월드 모델 상태 전이 신경망(Dynamics Model) 학습 중...")
-    world_engine.train_quick_dynamics(epochs=120)
+    world_engine.train_quick_dynamics()
     print("   -> 학습 완료!\n")
 
     sim = WarehouseSimulator(scenario="corner_turn")
