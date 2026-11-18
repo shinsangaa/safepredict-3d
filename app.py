@@ -5,8 +5,8 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from simulator import WarehouseSimulator, SCENARIO_MAX_TIME
-from risk_engine import CollisionRiskEngine
+from simulator import WarehouseSimulator, SCENARIO_MAX_TIME, SCENARIO_STOP_DISTANCE
+from risk_engine import CollisionRiskEngine, EPSILON
 from world_model import IndustrialWorldEngine
 
 # 1. 페이지 기본 설정 (넓은 관제 화면 레이아웃)
@@ -34,6 +34,7 @@ if "sim" not in st.session_state:
     st.session_state.prev_wk = None
     st.session_state.event_logs = []
     st.session_state.is_running = False
+    st.session_state.is_finished = False # 시나리오 종료 여부
 
 def reset_simulation(new_scenario: str):
     st.session_state.scenario = new_scenario
@@ -41,6 +42,8 @@ def reset_simulation(new_scenario: str):
     st.session_state.prev_fl = None
     st.session_state.prev_wk = None
     st.session_state.event_logs = []
+    st.session_state.is_finished = False # 종료 상태 해제
+    st.session_state.pop("latest_data", None) # 이전 화면 데이터 삭제
 
 # 4. 상단 타이틀 및 설명
 st.title("🛡️ SafePredict 3D : 산업현장 월드 모델 기반 안전 관제 시스템")
@@ -68,7 +71,8 @@ with st.sidebar:
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
         if st.button("▶️ 자동 재생", use_container_width=True, type="primary"):
-            st.session_state.is_running = True
+            if not st.session_state.is_finished: # 종료된 시나리오는 다시 재생하지 않는다
+                st.session_state.is_running = True
     with col_btn2:
         if st.button("⏸️ 일시 정지", use_container_width=True):
             st.session_state.is_running = False
@@ -91,7 +95,10 @@ with st.sidebar:
     )
 
 # 6. 시뮬레이션 스텝 진행 (자동 재생 중이거나 수동 스텝 클릭 시 2프레임=0.2초씩 전진)
-if st.session_state.is_running or step_clicked:
+if (st.session_state.is_running or step_clicked) and not st.session_state.is_finished:
+    stop_distance = SCENARIO_STOP_DISTANCE[st.session_state.scenario]
+    max_time = SCENARIO_MAX_TIME[st.session_state.scenario]
+
     for _ in range(2):
         frame = st.session_state.sim.step()
         fl = frame["forklift"]
@@ -143,9 +150,13 @@ if st.session_state.is_running or step_clicked:
         st.session_state.prev_fl = fl.copy()
         st.session_state.prev_wk = wk.copy()
 
-    # 각 시나리오의 최대 실행 시간 도달 시 자동 정지
-    if st.session_state.sim.current_time >= SCENARIO_MAX_TIME[st.session_state.scenario]:
-        st.session_state.is_running = False
+        # 종료 판정: 이 틱의 계산과 기록을 마친 뒤에 확인한다.
+        reached_distance = stop_distance is not None and curr_risk["distance"] <= stop_distance + EPSILON
+        reached_time = frame["timestamp"] >= max_time
+        if reached_distance or reached_time:
+            st.session_state.is_finished = True
+            st.session_state.is_running = False
+            break
 
 # 초기 화면 로딩 시 1스텝 기본 데이터 생성
 if "latest_data" not in st.session_state:
@@ -185,6 +196,9 @@ elif status == "WARNING":
     m5.warning(f"⚠️ 주의 (CRI: {data['total_cri']})")
 else:
     m5.success(f"✅ 정상 (CRI: {data['total_cri']})")
+
+if st.session_state.is_finished:
+    st.info(f"시나리오가 종료되었습니다 (종료 시각 {data['timestamp']:.1f}초). 다시 보려면 [초기화]를 누르세요.")
 
 # 8. 메인 화면 분할: 왼쪽(Three.js 3D 관제 화면), 오른쪽(경보 이벤트 로그)
 col_3d, col_log = st.columns([2.2, 1])

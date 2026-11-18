@@ -13,6 +13,16 @@ SCENARIO_MAX_TIME = {
     "corner_turn": 6.0,
 }
 
+# 시나리오별 종료 거리(m) - scenarios.md 3장. None이면 거리로는 종료하지 않는다.
+SCENARIO_STOP_DISTANCE = {
+    "parallel": None,       # S01
+    "stop_approach": 1.0,   # S02
+    "head_on": 1.0,         # S03
+    "crossing": 1.0,        # S04
+    "retreat": None,        # S05
+    "corner_turn": 1.0,     # S06
+}
+
 # 객체(지게차, 작업자)의 현재 상태를 담는 데이터 구조 정의
 @dataclass
 class EntityState:
