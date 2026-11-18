@@ -212,7 +212,8 @@ with col_3d:
         "worker": data["worker"],
         "fl_traj": data["fl_traj"],
         "wk_traj": data["wk_traj"],
-        "status": data["status"]
+        "status": data["status"],
+        "safe_radius": data["curr_risk"]["safe_radius"] # 동적 안전 버블 반경(m)
     })
 
     threejs_html = f"""
@@ -233,7 +234,7 @@ with col_3d:
     <body>
         <div id="info">
             🟡 <b>지게차 (FL_01)</b> &nbsp;|&nbsp; 🔵 <b>작업자 (WK_01)</b> &nbsp;|&nbsp; 🟣 <b>월드 모델 예측 경로(2.5s)</b><br>
-            <span style="color:#94a3b8; font-size:11px;">마우스 드래그: 시점 회전</span>
+            <span style="color:#94a3b8; font-size:11px;">마우스 드래그: 시점 회전 &nbsp;|&nbsp; 안전 버블 반경: {data['curr_risk']['safe_radius']:.1f} m</span>
         </div>
         <script>
             const payload = {scene_payload};
@@ -282,12 +283,26 @@ with col_3d:
             if (payload.status === "WARNING") bubbleColor = 0xeab308; // WARNING (노랑)
             if (payload.status === "CRITICAL") bubbleColor = 0xef4444; // CRITICAL (빨강)
 
-            const bubbleGeo = new THREE.RingGeometry(1.4, 2.2, 32);
-            const bubbleMat = new THREE.MeshBasicMaterial({{ color: bubbleColor, side: THREE.DoubleSide, transparent: true, opacity: 0.55 }});
-            const bubble = new THREE.Mesh(bubbleGeo, bubbleMat);
-            bubble.rotation.x = -Math.PI / 2;
-            bubble.position.y = 0.05;
-            flGroup.add(bubble);
+            // 동적 안전 버블: 반경 = safe_radius_m (3.0 + 0.5 x 지게차 속력)
+            const safeRadius = payload.safe_radius;
+
+            // 버블 내부 (옅게 채움)
+            const bubbleFill = new THREE.Mesh(
+                new THREE.CircleGeometry(safeRadius, 64),
+                new THREE.MeshBasicMaterial({{ color: bubbleColor, side: THREE.DoubleSide, transparent: true, opacity: 0.12 }})
+            );
+            bubbleFill.rotation.x = -Math.PI / 2;
+            bubbleFill.position.y = 0.04;
+            flGroup.add(bubbleFill);
+
+            // 버블 경계선 (진하게)
+            const bubbleEdge = new THREE.Mesh(
+                new THREE.RingGeometry(safeRadius - 0.12, safeRadius, 64),
+                new THREE.MeshBasicMaterial({{ color: bubbleColor, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }})
+            );
+            bubbleEdge.rotation.x = -Math.PI / 2;
+            bubbleEdge.position.y = 0.05;
+            flGroup.add(bubbleEdge);
 
             // 시뮬레이터 (x, y) -> Three.js (x, 0, y) 매핑
             flGroup.position.set(payload.forklift.x, 0, payload.forklift.y);
