@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from simulator import WarehouseSimulator
+from simulator import WarehouseSimulator, SCENARIO_MAX_TIME
 from risk_engine import CollisionRiskEngine
 from world_model import IndustrialWorldEngine
 
@@ -28,8 +28,8 @@ risk_engine = CollisionRiskEngine()
 
 # 3. 세션 상태(Session State) 초기화
 if "sim" not in st.session_state:
-    st.session_state.scenario = "corner_turn"
-    st.session_state.sim = WarehouseSimulator(scenario="corner_turn")
+    st.session_state.scenario = "parallel"
+    st.session_state.sim = WarehouseSimulator(scenario="parallel")
     st.session_state.prev_fl = None
     st.session_state.prev_wk = None
     st.session_state.event_logs = []
@@ -51,9 +51,12 @@ with st.sidebar:
     st.header("🎛️ 관제 시나리오 제어")
     
     scenario_map = {
-        "사각지대 코너 급회전 (월드모델 검증)": "corner_turn",
-        "사거리 직진 교차 충돌 위험": "collision",
-        "정상 평행 주행 (안전)": "safe"
+        "S01 정상 이동": "parallel",
+        "S02 정지 접근": "stop_approach",
+        "S03 정면 접근": "head_on",
+        "S04 교차 이동": "crossing",
+        "S05 접근 후 이탈": "retreat",
+        "S06 코너 회전 (월드 모델 검증)": "corner_turn",
     }
     selected_label = st.selectbox("시연 시나리오 선택", list(scenario_map.keys()))
     selected_code = scenario_map[selected_label]
@@ -140,8 +143,8 @@ if st.session_state.is_running or step_clicked:
         st.session_state.prev_fl = fl.copy()
         st.session_state.prev_wk = wk.copy()
 
-    # 6.0초 도달 시 자동 정지
-    if st.session_state.sim.current_time >= 6.0:
+    # 각 시나리오의 최대 실행 시간 도달 시 자동 정지
+    if st.session_state.sim.current_time >= SCENARIO_MAX_TIME[st.session_state.scenario]:
         st.session_state.is_running = False
 
 # 초기 화면 로딩 시 1스텝 기본 데이터 생성

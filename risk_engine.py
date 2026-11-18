@@ -135,7 +135,7 @@ if __name__ == "__main__":
     from simulator import WarehouseSimulator
 
     print("=== [STEP 2] 시뮬레이터 + 위험 계산 엔진 통합 테스트 ===")
-    sim = WarehouseSimulator(scenario="collision")
+    sim = WarehouseSimulator(scenario="crossing")
     engine = CollisionRiskEngine()
 
     for _ in range(60):
