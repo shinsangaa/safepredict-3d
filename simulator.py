@@ -46,7 +46,7 @@ class WarehouseSimulator:
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=0.0, heading=0.0)
             self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)
         elif self.scenario == "head_on": #S03
-            self.forklift = EntityState("FL_01", "forkllift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
+            self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
             self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)
         elif self.scenario == "crossing": #S04
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
