@@ -32,6 +32,28 @@ SCENARIO_IDS = {
     "crossing": "S04", "retreat": "S05", "corner_turn": "S06",
 }
 
+# 시나리오별 랙 배치 (화면 표시용, 충돌 계산에는 반영하지 않음)
+# 각 항목: [중심 x, 중심 y, x방향 길이, y방향 길이] (m, 시뮬레이션 좌표)
+SCENARIO_RACKS = {
+    "parallel":      [[10.0, 4.75, 16.0, 2.5], [10.0, -3.5, 16.0, 3.0]],
+    "stop_approach": [[5.0, 5.0, 12.0, 3.0], [5.0, -3.5, 12.0, 3.0]],
+    "head_on":       [[5.0, 5.0, 12.0, 3.0], [5.0, -3.5, 12.0, 3.0]],
+    "crossing":      [[5.0, 6.25, 7.0, 5.5], [14.5, 6.25, 6.0, 5.5]],
+    "retreat":       [[5.0, 5.0, 12.0, 3.0], [5.0, -3.5, 12.0, 3.0]],
+    "corner_turn":   [[9.0, 8.5, 4.5, 4.5]],
+}
+
+# 시나리오별 화면 중심과 카메라 거리 (화면 표시용)
+# 각 항목: [중심 x, 중심 y, 카메라 수평 거리] (m, 시뮬레이션 좌표)
+SCENARIO_VIEW = {
+    "parallel":      [10.0, 3.0, 16.0],
+    "stop_approach": [5.0, 0.0, 12.0],
+    "head_on":       [5.0, 0.0, 12.0],
+    "crossing":      [10.0, 8.0, 18.0],
+    "retreat":       [5.0, 0.0, 12.0],
+    "corner_turn":   [10.0, 8.0, 18.0],
+}
+
 # 3. 세션 상태(Session State) 초기화
 if "sim" not in st.session_state:
     st.session_state.scenario = "parallel"
@@ -259,7 +281,9 @@ with col_3d:
         "fl_traj": data["fl_traj"],
         "wk_traj": data["wk_traj"],
         "status": data["status"],
-        "safe_radius": data["curr_risk"]["safe_radius"] # 동적 안전 버블 반경(m)
+        "safe_radius": data["curr_risk"]["safe_radius"], # 동적 안전 버블 반경(m)
+        "racks": SCENARIO_RACKS[st.session_state.scenario], # 시나리오별 랙 배치
+        "view": SCENARIO_VIEW[st.session_state.scenario] # 시나리오별 화면 중심·카메라 거리
     })
 
     threejs_html = f"""
@@ -290,8 +314,14 @@ with col_3d:
             scene.background = new THREE.Color(0x0f172a);
 
             const camera = new THREE.PerspectiveCamera(45, window.innerWidth / 460, 0.1, 1000);
-            camera.position.set(10, 22, 26);
-            camera.lookAt(10, 0, 8);
+            // 시나리오별 화면 중심(cx, cz)과 카메라 수평 거리(camDist)
+            const cx = payload.view[0], cz = payload.view[1], camDist = payload.view[2];
+            let angle = 0; // 카메라 수평 회전각(rad). 0이면 정면에서 바라봄
+            function updateCamera() {{
+                camera.position.set(cx + Math.sin(angle) * camDist, camDist * 1.22, cz + Math.cos(angle) * camDist);
+                camera.lookAt(cx, 0, cz);
+            }}
+            updateCamera();
 
             const renderer = new THREE.WebGLRenderer({{ antialias: true }});
             renderer.setSize(window.innerWidth, 460);
@@ -305,15 +335,16 @@ with col_3d:
             scene.add(dirLight);
 
             const gridHelper = new THREE.GridHelper(30, 30, 0x334155, 0x1e293b);
-            gridHelper.position.set(10, 0, 10);
+            gridHelper.position.set(cx, 0, cz);
             scene.add(gridHelper);
 
-            // 3. 사각지대 유발 물류 선반(랙) 배치 (코너 시야 방해물 표현)
-            const rackGeo = new THREE.BoxGeometry(4.5, 2.5, 4.5);
-            const rackMat = new THREE.MeshLambertMaterial({{ color: 0x475569, transparent: true, opacity: 0.85 }});
-            const rack1 = new THREE.Mesh(rackGeo, rackMat);
-            rack1.position.set(9.0, 1.25, 8.5);
-            scene.add(rack1);
+            // 3. 물류 선반(랙) 배치: 시나리오별 위치를 payload.racks로 받는다 (화면 표시용)
+            const rackMat = new THREE.MeshLambertMaterial({{ color: 0x475569, transparent: true, opacity: 0.85}});
+            payload.racks.forEach(r => {{
+                const rack = new THREE.Mesh(new THREE.BoxGeometry(r[2], 2.5, r[3]), rackMat);
+                rack.position.set(r[0], 1.25, r[1]);
+                scene.add(rack);
+            }});
 
             // 4. 지게차 3D 객체 및 동적 안전 버블
             const flGroup = new THREE.Group();
@@ -390,16 +421,14 @@ with col_3d:
             // 7. 간단한 마우스 드래그 카메라 회전
             let isDragging = false;
             let prevX = 0;
-            let angle = 0.4;
             document.addEventListener('mousedown', e => {{ isDragging = true; prevX = e.clientX; }});
             document.addEventListener('mouseup', () => {{ isDragging = false; }});
             document.addEventListener('mousemove', e => {{
                 if (!isDragging) return;
                 angle += (e.clientX - prevX) * 0.01;
                 prevX = e.clientX;
-                camera.position.x = 10 + Math.sin(angle) * 22;
-                camera.position.z = 10 + Math.cos(angle) * 22;
-                camera.lookAt(10, 0, 9);
+                updateCamera();
+                renderer.render(scene, camera); // 바뀐 시점으로 다시 그린다
             }});
 
             renderer.render(scene, camera);
