@@ -12,8 +12,7 @@ from world_model import IndustrialWorldEngine
 
 # 1. 페이지 기본 설정 (넓은 관제 화면 레이아웃)
 st.set_page_config(
-    page_title="SafePredict 3D | 월드 모델 기반 안전 관제",
-    page_icon="🛡️",
+    page_title="지게차·작업자 충돌 위험 관제",
     layout="wide"
 )
 
@@ -179,12 +178,12 @@ def process_frame(frame):
     return curr_risk
 
 # 4. 상단 타이틀 및 설명
-st.title("🛡️ SafePredict 3D : 산업현장 월드 모델 기반 안전 관제 시스템")
-st.caption("물리·규칙 기반 충돌 지표(TTC, DCPA) + 경량 월드 모델(Imagination Rollout) 통합 관제 PoC")
+st.title("지게차·작업자 충돌 위험 관제")
+st.caption("지게차와 작업자의 위치를 추적해, 부딪힐 위험을 미리 알려 줍니다")
 
 # 5. 사이드바: 시나리오 및 시뮬레이션 제어 패널
 with st.sidebar:
-    st.header("🎛️ 관제 시나리오 제어")
+    st.header("시나리오 제어")
     
     scenario_map = {
         "S01 정상 이동": "parallel",
@@ -223,11 +222,11 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-    st.markdown("### 🧠 월드 모델 작동 원리")
+    st.markdown("### 화면 보는 법")
     st.info(
-        "- **초록/파랑 실선**: 현재 위치 및 동적 안전 버블\n"
-        "- **보라색 점선(잔상)**: 월드 모델이 상상(Rollout)한 향후 2.5초 예측 궤적\n"
-        "- **선제 경보**: 현재 거리가 멀어도 예측 궤적이 교차하면 즉시 `CRITICAL` 경보 발령"
+        "- **바닥의 원**: 지게차 주변 안전 구역. 초록(정상), 노랑(주의), 빨강(위험)\n"
+        "- **보라·하늘색 선**: 앞으로 2.5초 동안의 예상 이동 경로\n"
+        "- 지금은 멀리 있어도 예상 경로가 가까워지면 미리 경보가 뜹니다"
     )
 
 # 첫 화면: tick 0(시간이 흐르기 전) 상태를 판정하고 INIT 이벤트를 기록
@@ -255,18 +254,18 @@ data = st.session_state.latest_data
 
 # 7. 상단 핵심 지표(KPI) 카드 영역
 m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("⏱️ 경과 시간", f"{data['timestamp']:.1f} 초")
-m2.metric("📏 현재 거리", f"{data['curr_risk']['distance']:.2f} m")
-m3.metric("📐 물리 CRI (현재)", f"{data['curr_risk']['cri']:.3f}")
-m4.metric("🧠 월드모델 예측 CRI", f"{data['future_risk']['max_pred_cri']:.3f}")
+m1.metric("경과 시간", f"{data['timestamp']:.1f} 초")
+m2.metric("현재 거리", f"{data['curr_risk']['distance']:.2f} m")
+m3.metric("현재 위험도", f"{data['curr_risk']['cri']:.3f}")
+m4.metric("예측 위험도", f"{data['future_risk']['max_pred_cri']:.3f}")
 
 status = data["status"]
 if status == "CRITICAL":
-    m5.error(f"🚨 위험 (CRI: {data['total_cri']})")
+    m5.error(f"위험 (통합 위험도: {data['total_cri']})")
 elif status == "WARNING":
-    m5.warning(f"⚠️ 주의 (CRI: {data['total_cri']})")
+    m5.warning(f"주의 (통합 위험도: {data['total_cri']})")
 else:
-    m5.success(f"✅ 정상 (CRI: {data['total_cri']})")
+    m5.success(f"정상 (통합 위험도: {data['total_cri']})")
 
 if st.session_state.is_finished:
     st.info(f"시나리오가 종료되었습니다 (종료 시각 {data['timestamp']:.1f}초). 다시 보려면 [초기화]를 누르세요.")
@@ -275,7 +274,7 @@ if st.session_state.is_finished:
 col_3d, col_log = st.columns([2.2, 1])
 
 with col_3d:
-    st.subheader("🏭 3D 디지털 트윈 안전 관제 뷰포트")
+    st.subheader("현장 3D 화면")
     
     # Python 데이터를 JSON으로 변환하여 Three.js HTML 코드에 주입
     scene_payload = json.dumps({
@@ -308,7 +307,7 @@ with col_3d:
     </head>
     <body>
         <div id="info">
-            🟡 <b>지게차 (FL_01)</b> &nbsp;|&nbsp; 🔵 <b>작업자 (WK_01)</b> &nbsp;|&nbsp; 🟣 <b>월드 모델 예측 경로(2.5s)</b><br>
+            <span style="color:#f59e0b;">■</span> <b>지게차</b> &nbsp;|&nbsp; <span style="color:#38bdf8;">■</span> <b>작업자</b> &nbsp;|&nbsp; <span style="color:#c084fc;">■</span> <b>예상 경로(2.5초)</b><br>
             <span style="color:#94a3b8; font-size:11px;">드래그: 회전 &nbsp;|&nbsp; Shift+드래그: 이동 &nbsp;|&nbsp; 휠: 확대/축소 &nbsp;|&nbsp; 더블클릭: 초기화 &nbsp;|&nbsp; 안전 버블 반경: {data['curr_risk']['safe_radius']:.1f} m</span>
         </div>
         <script>
@@ -494,7 +493,7 @@ with col_3d:
     components.html(threejs_html, height=465)
 
 with col_log:
-    st.subheader("📋 실시간 위험 경보 이력")
+    st.subheader("위험 단계 변경 이력")
     if len(st.session_state.event_logs) > 0:
         df_logs = pd.DataFrame(st.session_state.event_logs)
         df_view = pd.DataFrame({
@@ -508,7 +507,7 @@ with col_log:
         })
         st.dataframe(df_view.iloc[::-1], use_container_width=True, height=330, hide_index=True)
     else:
-        st.info("현재까지 발생한 주의/위험 경보 이벤트가 없습니다.\n왼쪽에서 [▶️ 자동 재생]을 눌러 시뮬레이션을 시작하세요.")
+        st.info("현재까지 발생한 주의/위험 경보 이벤트가 없습니다.\n왼쪽에서 [자동 재생]을 눌러 시뮬레이션을 시작하세요.")
 
     # CSV 다운로드 (세션 기록 -> 화면 표시 -> CSV)
     run_label = f"{SCENARIO_IDS[st.session_state.scenario]}_run_{st.session_state.run_seq:03d}"
