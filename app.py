@@ -287,7 +287,8 @@ with col_3d:
         "racks": SCENARIO_RACKS[st.session_state.scenario], # 시나리오별 랙 배치
         "view": SCENARIO_VIEW[st.session_state.scenario], # 시나리오별 화면 중심·카메라 거리
         "view_mode": view_mode, # 관제 시점 / 지게차 1인칭 / 작업자 1인칭
-        "scenario_id": SCENARIO_IDS[st.session_state.scenario] # 시점 저장용 이름에 사용
+        "scenario_id": SCENARIO_IDS[st.session_state.scenario], # 시점 저장용 이름에 사용
+        "time": data["timestamp"] # 경과 시간(초). 걷는 동작에 사용
     })
 
     threejs_html = f"""
@@ -416,13 +417,40 @@ with col_3d:
             flGroup.rotation.y = -payload.forklift.heading;
             scene.add(flGroup);
 
-            // 5. 작업자 3D 객체
-            const wkMesh = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.35, 0.35, 1.7, 16),
-                new THREE.MeshLambertMaterial({{ color: 0x38bdf8 }})
-            );
-            wkMesh.position.set(payload.worker.x, 0.85, payload.worker.y);
-            scene.add(wkMesh);
+            // 5. 작업자 3D 객체: 머리·몸통·팔·다리로 만든 사람 모양
+            const wkGroup = new THREE.Group();
+            const wkMat = new THREE.MeshLambertMaterial({{ color: 0x38bdf8 }});
+
+            const wkHead = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), wkMat);
+            wkHead.position.y = 1.55;
+            wkGroup.add(wkHead);
+
+            const wkBody = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.6, 12), wkMat);
+            wkBody.position.y = 1.1;
+            wkGroup.add(wkBody);
+
+            // 팔다리 하나를 만든다: 위쪽 끝(어깨·골반)을 축으로 앞뒤로 흔들 수 있게 그룹에 담는다
+            function addLimb(length, radius, jointY, sideZ, swingAngle) {{
+                const joint = new THREE.Group();
+                joint.position.set(0, jointY, sideZ);
+                const limb = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 8), wkMat);
+                limb.position.y = -length / 2;
+                joint.add(limb);
+                joint.rotation.z = swingAngle;
+                wkGroup.add(joint);
+            }}
+
+            // 걷는 동작: 경과 시간에 따라 팔다리 각도를 바꾼다 (0.2초마다 앞, 가운데, 뒤, 가운데 순서)
+            const swing = payload.worker.speed > 0 ? Math.sin(payload.time * Math.PI / 0.4) * 0.6 : 0;
+            addLimb(0.8, 0.08, 0.8, 0.1, swing);   // 한쪽 다리
+            addLimb(0.8, 0.08, 0.8, -0.1, -swing); // 반대쪽 다리
+            addLimb(0.6, 0.06, 1.38, 0.2, -swing); // 한쪽 팔 (같은 쪽 다리와 반대로)
+            addLimb(0.6, 0.06, 1.38, -0.2, swing); // 반대쪽 팔
+
+            wkGroup.position.set(payload.worker.x, 0, payload.worker.y);
+            wkGroup.rotation.y = -payload.worker.heading; // 진행 방향을 보게 돌린다
+            if (payload.view_mode === "worker") wkGroup.visible = false; // 작업자 1인칭에서는 자기 몸을 그리지 않는다
+            scene.add(wkGroup);
 
             // 6. 월드 모델 예측 미래 궤적 (Imagination Rollout 잔상 렌더링)
             function drawTrajectory(trajPoints, colorHex) {{
