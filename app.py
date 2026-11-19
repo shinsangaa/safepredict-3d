@@ -45,6 +45,7 @@ if "sim" not in st.session_state:
     st.session_state.event_seq = 0 # 이번 실행에서 발급한 이벤트 번호
     st.session_state.run_seq = 1 # 실행 번호 (run_001, run_002, ...)
     st.session_state.run_start = datetime.now(timezone.utc) # 실행 시작 UTC 시각
+    st.session_state.risk_results = [] # 틱별 계산 결과 (data_spec.md 4절)
 
 def reset_simulation(new_scenario: str):
     st.session_state.scenario = new_scenario
@@ -58,6 +59,7 @@ def reset_simulation(new_scenario: str):
     st.session_state.event_seq = 0
     st.session_state.run_seq += 1
     st.session_state.run_start = datetime.now(timezone.utc)
+    st.session_state.risk_results = []
 
 def record_event(frame, curr_risk, future_risk, total_cri, status):
     """위험 단계가 바뀐 틱에만 이벤트 1건 기록 (risk_rules.md 8절)"""
@@ -121,6 +123,32 @@ def process_frame(frame):
         "total_cri": total_cri,
         "status": status
     }
+
+    # 틱별 계산 결과 저장 (data_spec.md 4절 risk_result)
+    sim_time = frame["timestamp"]
+    tick_time = st.session_state.run_start + timedelta(seconds=sim_time)
+    cri_pred = future_risk["max_pred_cri"]
+    st.session_state.risk_results.append({
+        "run_id": f"run_{st.session_state.run_seq:03d}",
+        "scenario_id": SCENARIO_IDS[st.session_state.scenario],
+        "tick": round(sim_time * 10),
+        "simulation_time_s": sim_time,
+        "timestamp": tick_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "distance_m": round(curr_risk["distance"], 3),
+        "relative_speed_mps": round(curr_risk["relative_speed"], 3),
+        "closing_speed_mps": round(curr_risk["closing_speed"], 3),
+        "ttc_s": None if curr_risk["ttc"] is None else round(curr_risk["ttc"], 3),
+        "t_cpa_s": round(curr_risk["t_cpa"], 3),
+        "dcpa_m": round(curr_risk["dcpa"], 3),
+        "safe_radius_m": round(curr_risk["safe_radius"], 3),
+        "cri": round(curr_risk["cri"], 3),
+        "risk_level": status,
+        "collision_predicted": curr_risk["collision_predicted"],
+        "cri_pred": cri_pred,
+        "cri_total": total_cri,
+        "min_future_distance_m": future_risk["min_future_dist"],
+        "critical_offset_s": None if cri_pred == 0 else future_risk["critical_offset"],
+    })
 
     record_event(frame, curr_risk, future_risk, total_cri, status)
 
@@ -394,9 +422,26 @@ with col_log:
             "거리(m)": df_logs["distance_m"].round(2),
             "원인": df_logs["trigger"].map({"CURRENT": "현재", "PREDICTED": "예측"}),
         })
-        st.dataframe(df_view.iloc[::-1], use_container_width=True, height=420, hide_index=True)
+        st.dataframe(df_view.iloc[::-1], use_container_width=True, height=330, hide_index=True)
     else:
         st.info("현재까지 발생한 주의/위험 경보 이벤트가 없습니다.\n왼쪽에서 [▶️ 자동 재생]을 눌러 시뮬레이션을 시작하세요.")
+
+    # CSV 다운로드 (세션 기록 -> 화면 표시 -> CSV)
+    run_label = f"{SCENARIO_IDS[st.session_state.scenario]}_run_{st.session_state.run_seq:03d}"
+    st.download_button(
+        "이벤트 로그 CSV",
+        data=pd.DataFrame(st.session_state.event_logs).to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"events_{run_label}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+    st.download_button(
+        "틱별 계산 결과 CSV",
+        data=pd.DataFrame(st.session_state.risk_results).to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"risk_results_{run_label}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 # 9. 자동 재생 루프 처리 (부드러운 3D 프레임 갱신)
 if st.session_state.is_running:

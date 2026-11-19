@@ -1,8 +1,8 @@
 # SafePredict 3D - 데이터 명세서
 - 문서명: `data_spec.md`
-- 버전: v0.3 (월드 모델 가중치 저장 위치 반영)
+- 버전: v0.4 (이벤트 로그·틱별 계산 결과 저장 방식 수정)
 - 작성일: 2026-11-16
-- 수정일: 2026-11-18
+- 수정일: 2026-11-19
 - 적용 범위: 지게차 1대·작업자 1명, S01~S06 시뮬레이션
 
 ## 1. 목적 및 데이터 흐름
@@ -22,7 +22,7 @@
 | 속도 | 미터/초(`m/s`) |
 | 방향 | 라디안(`rad`), +x축 기준 반시계 방향 |
 | 시간 | 초(`s`); `simulation_time_s`는 실행 시작부터 경과 시간 |
-| 타임스탬프 | `timestamp`는 UTC ISO 8601 문자열(`Z` 포함) |
+| 타임스탬프 | `timestamp`는 UTC ISO 8601 문자열(`Z` 포함, 밀리초 포함) |
 | 생성 주기 | `simulation_time_s = tick / 10` (`tick`은 0부터 시작) |
 | 객체 유형 | `forklift` 또는 `worker` |
 | 위험 단계 | `SAFE`, `WARNING`, `CRITICAL` |
@@ -237,8 +237,8 @@ if abs(a - b) < EPSILON:
 |---|---|---|
 | 시나리오 설정 | `data/scenarios.json` | 시뮬레이터 입력 |
 | 위치·속도 데이터 | 실행 중 메모리; 테스트 시 `data/sample/object_states.csv` | 시뮬레이터 → 검증 모듈 |
-| 위험 계산 결과 | 실행 중 메모리; 테스트 시 `data/sample/risk_results.csv` | 위험 엔진 → 대시보드 |
-| 이벤트 기록 | `data/logs/events.csv` (로컬 개발용) | 위험 판정 → 기록 모듈 |
+| 위험 계산 결과 | 실행 세션에 틱별 보관, CSV 다운로드 (`risk_results_S01_run_001.csv` 형식) | 위험 엔진 → 대시보드 |
+| 이벤트 기록 | 실행 세션에 보관, CSV 다운로드 (`events_S01_run_001.csv` 형식) | 위험 판정 → 대시보드 |
 | 월드 모델 가중치 | `models/world_model_weights.pt` (산출물 보관용. 앱은 시작 시 학습 후 메모리에 보관) | `save_weights.py`(파일 저장), `world_model.py` → 대시보드 |
 
 - Streamlit Cloud: 로컬 파일에 저장한 이벤트 이력을 영구 저장소로 간주하지 않는다. PoC에서는 실행 세션 내 기록과 다운로드 기능을 우선한다.
@@ -247,6 +247,7 @@ if abs(a - b) < EPSILON:
 ```text
 경보 발생 -> Streamlit 세션에 기록 -> 대시보드에 표시 -> CSV 다운로드
 ```
+- CSV는 UTF-8(BOM) 인코딩이며, null 값은 빈 칸으로 저장한다.
 
 ## 9. 관련 문서
 
@@ -261,3 +262,4 @@ if abs(a - b) < EPSILON:
 | v0.1 | 2026-11-16 | 최초 작성 |
 | v0.2 | 2026-11-17 | `risk_result`에 예측·통합 CRI 필드 4개 추가, 예측 궤적(4.1) 절 추가, `risk_event`에 필드 3개 추가, S06 설정 추가, 문서-코드 필드명 대응표 추가 |
 | v0.3 | 2026-11-18 | 월드 모델 가중치 파일 저장 위치 추가 (models/world_model_weights.pt) |
+| v0.4 | 2026-11-19 | 이벤트 로그·틱별 계산 결과의 저장 방식을 세션 보관 + CSV 다운로드로 수정 |
