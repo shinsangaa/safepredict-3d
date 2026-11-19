@@ -1,12 +1,13 @@
 # 실행 명령어 : python -m streamlit run app.py
 import time
+from datetime import datetime, timezone, timedelta
 import json
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
 from simulator import WarehouseSimulator, SCENARIO_MAX_TIME, SCENARIO_STOP_DISTANCE
-from risk_engine import CollisionRiskEngine, EPSILON
+from risk_engine import CollisionRiskEngine, EPSILON, classify_level
 from world_model import IndustrialWorldEngine
 
 # 1. 페이지 기본 설정 (넓은 관제 화면 레이아웃)
@@ -25,6 +26,11 @@ def load_world_model():
 
 world_engine = load_world_model()
 risk_engine = CollisionRiskEngine()
+RULE_VERSION = "v0.2" # risk_rules.md의 규칙 버전
+SCENARIO_IDS = {
+    "parallel": "S01", "stop_approach": "S02", "head_on": "S03",
+    "crossing": "S04", "retreat": "S05", "corner_turn": "S06",
+}
 
 # 3. 세션 상태(Session State) 초기화
 if "sim" not in st.session_state:
@@ -35,6 +41,10 @@ if "sim" not in st.session_state:
     st.session_state.event_logs = []
     st.session_state.is_running = False
     st.session_state.is_finished = False # 시나리오 종료 여부
+    st.session_state.prev_level = None # 직전 위험 단계 (None = 아직 판정 전)
+    st.session_state.event_seq = 0 # 이번 실행에서 발급한 이벤트 번호
+    st.session_state.run_seq = 1 # 실행 번호 (run_001, run_002, ...)
+    st.session_state.run_start = datetime.now(timezone.utc) # 실행 시작 UTC 시각
 
 def reset_simulation(new_scenario: str):
     st.session_state.scenario = new_scenario
@@ -44,6 +54,79 @@ def reset_simulation(new_scenario: str):
     st.session_state.event_logs = []
     st.session_state.is_finished = False # 종료 상태 해제
     st.session_state.pop("latest_data", None) # 이전 화면 데이터 삭제
+    st.session_state.prev_level = None
+    st.session_state.event_seq = 0
+    st.session_state.run_seq += 1
+    st.session_state.run_start = datetime.now(timezone.utc)
+
+def record_event(frame, curr_risk, future_risk, total_cri, status):
+    """위험 단계가 바뀐 틱에만 이벤트 1건 기록 (risk_rules.md 8절)"""
+    prev_level = st.session_state.prev_level
+    if status == prev_level:
+        return # 같은 단계 유지 -> 기록하지 않음
+
+    st.session_state.event_seq += 1
+    sim_time = frame["timestamp"]
+    cri_pred = future_risk["max_pred_cri"]
+    event_time = st.session_state.run_start + timedelta(seconds=sim_time)
+
+    st.session_state.event_logs.append({
+        "event_id": f"evt_{st.session_state.event_seq:04d}",
+        "run_id": f"run_{st.session_state.run_seq:03d}",
+        "scenario_id": SCENARIO_IDS[st.session_state.scenario],
+        "tick": round(sim_time * 10),
+        "simulation_time_s": sim_time,
+        "timestamp": event_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "event_type": "INIT" if prev_level is None else "LEVEL_CHANGE",
+        "previous_level": prev_level,
+        "current_level": status,
+        "distance_m": round(curr_risk["distance"], 3),
+        "ttc_s": None if curr_risk["ttc"] is None else round(curr_risk["ttc"], 3),
+        "dcpa_m": round(curr_risk["dcpa"], 3),
+        "cri": round(curr_risk["cri"], 3),
+        "rule_version": RULE_VERSION,
+        "cri_pred": cri_pred,
+        "cri_total": total_cri,
+        "trigger": "CURRENT" if curr_risk["cri"] >= 0.9 * cri_pred else "PREDICTED",
+    })
+    st.session_state.prev_level = status
+
+def process_frame(frame):
+    """프레임 1개 처리: 위험 계산 -> 단계 판정 -> 화면 데이터 저장 -> 이벤트 기록"""
+    fl = frame["forklift"]
+    wk = frame["worker"]
+
+    # 현재 CRI
+    curr_risk = risk_engine.calculate_risk(fl, wk)
+
+    # 예측 CRI (첫 틱은 직전 값이 없어 추정 행동이 (0, 0))
+    fl_act = world_engine.estimate_action(st.session_state.prev_fl, fl)
+    wk_act = world_engine.estimate_action(st.session_state.prev_wk, wk)
+    fl_traj = world_engine.imagine_rollout(fl, fl_act, horizon_steps=25)
+    wk_traj = world_engine.imagine_rollout(wk, wk_act, horizon_steps=25)
+    future_risk = world_engine.evaluate_future_risk(fl_traj, wk_traj, risk_engine)
+
+    # 통합 CRI와 위험 단계
+    total_cri = round(max(curr_risk["cri"], 0.9 * future_risk["max_pred_cri"]), 3)
+    status = classify_level(total_cri)
+
+    st.session_state.latest_data = {
+        "timestamp": frame["timestamp"],
+        "forklift": fl,
+        "worker": wk,
+        "fl_traj": fl_traj,
+        "wk_traj": wk_traj,
+        "curr_risk": curr_risk,
+        "future_risk": future_risk,
+        "total_cri": total_cri,
+        "status": status
+    }
+
+    record_event(frame, curr_risk, future_risk, total_cri, status)
+
+    st.session_state.prev_fl = fl.copy()
+    st.session_state.prev_wk = wk.copy()
+    return curr_risk
 
 # 4. 상단 타이틀 및 설명
 st.title("🛡️ SafePredict 3D : 산업현장 월드 모델 기반 안전 관제 시스템")
@@ -94,6 +177,10 @@ with st.sidebar:
         "- **선제 경보**: 현재 거리가 멀어도 예측 궤적이 교차하면 즉시 `CRITICAL` 경보 발령"
     )
 
+# 첫 화면: tick 0(시간이 흐르기 전) 상태를 판정하고 INIT 이벤트를 기록
+if "latest_data" not in st.session_state:
+    process_frame(st.session_state.sim.get_frame())
+
 # 6. 시뮬레이션 스텝 진행 (자동 재생 중이거나 수동 스텝 클릭 시 2프레임=0.2초씩 전진)
 if (st.session_state.is_running or step_clicked) and not st.session_state.is_finished:
     stop_distance = SCENARIO_STOP_DISTANCE[st.session_state.scenario]
@@ -101,54 +188,7 @@ if (st.session_state.is_running or step_clicked) and not st.session_state.is_fin
 
     for _ in range(2):
         frame = st.session_state.sim.step()
-        fl = frame["forklift"]
-        wk = frame["worker"]
-
-        # 현재 물리 기반 위험도
-        curr_risk = risk_engine.calculate_risk(fl, wk)
-
-        # 월드 모델 기반 미래 2.5초 롤아웃 및 위험 평가
-        fl_act = world_engine.estimate_action(st.session_state.prev_fl, fl)
-        wk_act = world_engine.estimate_action(st.session_state.prev_wk, wk)
-        fl_traj = world_engine.imagine_rollout(fl, fl_act, horizon_steps=25)
-        wk_traj = world_engine.imagine_rollout(wk, wk_act, horizon_steps=25)
-        future_risk = world_engine.evaluate_future_risk(fl_traj, wk_traj, risk_engine)
-
-        # 통합 CRI 및 상태 판정
-        total_cri = round(max(curr_risk["cri"], 0.9 * future_risk["max_pred_cri"]), 3)
-        if total_cri >= 0.85:
-            status = "CRITICAL"
-        elif total_cri >= 0.50:
-            status = "WARNING"
-        else:
-            status = "SAFE"
-
-        # 최신 프레임 결과 저장
-        st.session_state.latest_data = {
-            "timestamp": frame["timestamp"],
-            "forklift": fl,
-            "worker": wk,
-            "fl_traj": fl_traj,
-            "wk_traj": wk_traj,
-            "curr_risk": curr_risk,
-            "future_risk": future_risk,
-            "total_cri": total_cri,
-            "status": status
-        }
-
-        # WARNING 이상 경보 발생 시 이벤트 로그에 누락 없이 기록
-        if status in ["WARNING", "CRITICAL"]:
-            st.session_state.event_logs.insert(0, {
-                "시간(s)": f"{frame['timestamp']:.1f}s",
-                "위험단계": f"🚨 {status}" if status == "CRITICAL" else f"⚠️ {status}",
-                "통합 CRI": total_cri,
-                "현재 거리(m)": round(curr_risk["distance"], 2),
-                "예측 최소거리(m)": future_risk["min_future_dist"],
-                "사유": "월드모델 궤적 교차 예측" if future_risk["max_pred_cri"] > curr_risk["cri"] else "근접/직접 충돌 경로"
-            })
-
-        st.session_state.prev_fl = fl.copy()
-        st.session_state.prev_wk = wk.copy()
+        curr_risk = process_frame(frame)
 
         # 종료 판정: 이 틱의 계산과 기록을 마친 뒤에 확인한다.
         reached_distance = stop_distance is not None and curr_risk["distance"] <= stop_distance + EPSILON
@@ -157,28 +197,6 @@ if (st.session_state.is_running or step_clicked) and not st.session_state.is_fin
             st.session_state.is_finished = True
             st.session_state.is_running = False
             break
-
-# 초기 화면 로딩 시 1스텝 기본 데이터 생성
-if "latest_data" not in st.session_state:
-    frame = st.session_state.sim.step()
-    fl, wk = frame["forklift"], frame["worker"]
-    curr_risk = risk_engine.calculate_risk(fl, wk)
-    fl_traj = world_engine.imagine_rollout(fl, (0.0, 0.0), horizon_steps=25)
-    wk_traj = world_engine.imagine_rollout(wk, (0.0, 0.0), horizon_steps=25)
-    future_risk = world_engine.evaluate_future_risk(fl_traj, wk_traj, risk_engine)
-    st.session_state.latest_data = {
-        "timestamp": frame["timestamp"],
-        "forklift": fl,
-        "worker": wk,
-        "fl_traj": fl_traj,
-        "wk_traj": wk_traj,
-        "curr_risk": curr_risk,
-        "future_risk": future_risk,
-        "total_cri": curr_risk["cri"],
-        "status": "SAFE"
-    }
-    st.session_state.prev_fl = fl.copy()
-    st.session_state.prev_wk = wk.copy()
 
 data = st.session_state.latest_data
 
@@ -367,7 +385,16 @@ with col_log:
     st.subheader("📋 실시간 위험 경보 이력")
     if len(st.session_state.event_logs) > 0:
         df_logs = pd.DataFrame(st.session_state.event_logs)
-        st.dataframe(df_logs, use_container_width=True, height=420, hide_index=True)
+        df_view = pd.DataFrame({
+            "시간(s)": df_logs["simulation_time_s"].map(lambda t: f"{t:.1f}"),
+            "이벤트": df_logs["event_type"],
+            "이전 단계": df_logs["previous_level"].fillna("-"),
+            "현재 단계": df_logs["current_level"],
+            "통합 CRI": df_logs["cri_total"],
+            "거리(m)": df_logs["distance_m"].round(2),
+            "원인": df_logs["trigger"].map({"CURRENT": "현재", "PREDICTED": "예측"}),
+        })
+        st.dataframe(df_view.iloc[::-1], use_container_width=True, height=420, hide_index=True)
     else:
         st.info("현재까지 발생한 주의/위험 경보 이벤트가 없습니다.\n왼쪽에서 [▶️ 자동 재생]을 눌러 시뮬레이션을 시작하세요.")
 

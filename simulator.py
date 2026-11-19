@@ -72,6 +72,14 @@ class WarehouseSimulator:
         else:
             raise ValueError("지원하지 않는 시나리오입니다. 'parallel', 'stop_approach', 'head_on', 'crossing', 'retreat', 'corner_turn' 중 선택하세요.")
 
+    def get_frame(self):
+        """시간을 진행하지 않고 현재 상태만 반환 (tick 0 초기 판정용)"""
+        return {
+            "timestamp": self.current_time,
+            "forklift": asdict(self.forklift),
+            "worker": asdict(self.worker)
+        }
+
     def step(self):
         """0.1초(1프레임) 후의 객체 위치 업데이트 및 상태 반환"""
         self.current_time = round(self.current_time + self.dt, 2)
