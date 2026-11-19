@@ -201,6 +201,9 @@ with st.sidebar:
         reset_simulation(selected_code)
         st.rerun()
 
+    view_labels = {"관제 시점 (위에서)": "overview", "지게차 1인칭": "forklift", "작업자 1인칭": "worker"}
+    view_mode = view_labels[st.radio("3D 시점", list(view_labels.keys()))]
+
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
         if st.button("▶️ 자동 재생", use_container_width=True, type="primary"):
@@ -283,7 +286,9 @@ with col_3d:
         "status": data["status"],
         "safe_radius": data["curr_risk"]["safe_radius"], # 동적 안전 버블 반경(m)
         "racks": SCENARIO_RACKS[st.session_state.scenario], # 시나리오별 랙 배치
-        "view": SCENARIO_VIEW[st.session_state.scenario] # 시나리오별 화면 중심·카메라 거리
+        "view": SCENARIO_VIEW[st.session_state.scenario], # 시나리오별 화면 중심·카메라 거리
+        "view_mode": view_mode, # 관제 시점 / 지게차 1인칭 / 작업자 1인칭
+        "scenario_id": SCENARIO_IDS[st.session_state.scenario] # 시점 저장용 이름에 사용
     })
 
     threejs_html = f"""
@@ -304,7 +309,7 @@ with col_3d:
     <body>
         <div id="info">
             🟡 <b>지게차 (FL_01)</b> &nbsp;|&nbsp; 🔵 <b>작업자 (WK_01)</b> &nbsp;|&nbsp; 🟣 <b>월드 모델 예측 경로(2.5s)</b><br>
-            <span style="color:#94a3b8; font-size:11px;">마우스 드래그: 시점 회전 &nbsp;|&nbsp; 안전 버블 반경: {data['curr_risk']['safe_radius']:.1f} m</span>
+            <span style="color:#94a3b8; font-size:11px;">드래그: 회전 &nbsp;|&nbsp; Shift+드래그: 이동 &nbsp;|&nbsp; 휠: 확대/축소 &nbsp;|&nbsp; 더블클릭: 초기화 &nbsp;|&nbsp; 안전 버블 반경: {data['curr_risk']['safe_radius']:.1f} m</span>
         </div>
         <script>
             const payload = {scene_payload};
@@ -314,12 +319,38 @@ with col_3d:
             scene.background = new THREE.Color(0x0f172a);
 
             const camera = new THREE.PerspectiveCamera(45, window.innerWidth / 460, 0.1, 1000);
-            // 시나리오별 화면 중심(cx, cz)과 카메라 수평 거리(camDist)
-            const cx = payload.view[0], cz = payload.view[1], camDist = payload.view[2];
-            let angle = 0; // 카메라 수평 회전각(rad). 0이면 정면에서 바라봄
+            // 카메라 상태: 화면 중심(cx, cz), 수평 거리(camDist), 수평 회전각(angle)
+            let cx = payload.view[0], cz = payload.view[1], camDist = payload.view[2];
+            let angle = 0;
+
+            // 시점 상태를 브라우저에 저장했다가, 화면이 새로 만들어질 때 되살린다 (자동 재생 중 시점 유지)
+            const viewKey = "safepredict_view_" + payload.scenario_id + "_" + payload.view_mode;
+            try {{
+                const saved = JSON.parse(sessionStorage.getItem(viewKey));
+                if (saved) {{ cx = saved.cx; cz = saved.cz; camDist = saved.camDist; angle = saved.angle; }}
+            }} catch (e) {{}}
+            function saveView() {{
+                try {{
+                    sessionStorage.setItem(viewKey, JSON.stringify({{ cx: cx, cz: cz, camDist: camDist, angle: angle }}));
+                }} catch (e) {{}}
+            }}
+
             function updateCamera() {{
-                camera.position.set(cx + Math.sin(angle) * camDist, camDist * 1.22, cz + Math.cos(angle) * camDist);
-                camera.lookAt(cx, 0, cz);
+                if (payload.view_mode === "overview") {{
+                    // 관제 시점: 화면 중심 둘레의 원 위에서 내려다본다
+                    camera.fov = 45;
+                    camera.position.set(cx + Math.sin(angle) * camDist, camDist * 1.22, cz + Math.cos(angle) * camDist);
+                    camera.lookAt(cx, 0, cz);
+                }} else {{
+                    // 1인칭 시점: 선택한 객체의 눈높이에서 진행 방향을 본다 (드래그하면 좌우로 둘러봄)
+                    const me = payload.view_mode === "forklift" ? payload.forklift : payload.worker;
+                    const eye = payload.view_mode === "forklift" ? 2.0 : 1.6;
+                    const look = me.heading + angle;
+                    camera.fov = 70;
+                    camera.position.set(me.x, eye, me.y);
+                    camera.lookAt(me.x + Math.cos(look) * 10, eye - 1.5, me.y + Math.sin(look) * 10);
+                }}
+                camera.updateProjectionMatrix();
             }}
             updateCamera();
 
@@ -335,7 +366,7 @@ with col_3d:
             scene.add(dirLight);
 
             const gridHelper = new THREE.GridHelper(30, 30, 0x334155, 0x1e293b);
-            gridHelper.position.set(cx, 0, cz);
+            gridHelper.position.set(payload.view[0], 0, payload.view[1]);
             scene.add(gridHelper);
 
             // 3. 물류 선반(랙) 배치: 시나리오별 위치를 payload.racks로 받는다 (화면 표시용)
@@ -418,17 +449,41 @@ with col_3d:
             drawTrajectory(payload.fl_traj, 0xc084fc); // 지게차 미래 예측 궤적 (보라색)
             drawTrajectory(payload.wk_traj, 0x67e8f9); // 작업자 미래 예측 궤적 (하늘색)
 
-            // 7. 간단한 마우스 드래그 카메라 회전
+            // 7. 카메라 조작: 드래그(회전), Shift+드래그(이동), 휠(확대/축소), 더블클릭(초기화)
+            function redraw() {{
+                updateCamera();
+                renderer.render(scene, camera); // 바뀐 시점으로 다시 그린다
+                saveView();
+            }}
+
             let isDragging = false;
-            let prevX = 0;
-            document.addEventListener('mousedown', e => {{ isDragging = true; prevX = e.clientX; }});
+            let prevX = 0, prevY = 0;
+            document.addEventListener('mousedown', e => {{ isDragging = true; prevX = e.clientX; prevY = e.clientY; }});
             document.addEventListener('mouseup', () => {{ isDragging = false; }});
             document.addEventListener('mousemove', e => {{
                 if (!isDragging) return;
-                angle += (e.clientX - prevX) * 0.01;
-                prevX = e.clientX;
-                updateCamera();
-                renderer.render(scene, camera); // 바뀐 시점으로 다시 그린다
+                const dx = e.clientX - prevX, dy = e.clientY - prevY;
+                prevX = e.clientX; prevY = e.clientY;
+                if (e.shiftKey && payload.view_mode === "overview") {{
+                    // Shift+드래그: 화면 중심을 옮긴다 (이동)
+                    const k = camDist * 0.002;
+                    cx -= (Math.cos(angle) * dx + Math.sin(angle) * dy) * k;
+                    cz -= (-Math.sin(angle) * dx + Math.cos(angle) * dy) * k;
+                }} else {{
+                    angle += dx * 0.01; // 드래그: 좌우 회전 (1인칭에서는 좌우로 둘러보기)
+                }}
+                redraw();
+            }});
+            document.addEventListener('wheel', e => {{
+                if (payload.view_mode !== "overview") return;
+                e.preventDefault(); // 페이지 스크롤 대신 확대/축소
+                camDist = Math.min(40, Math.max(4, camDist * (e.deltaY > 0 ? 1.1 : 0.9)));
+                redraw();
+            }}, {{ passive: false }});
+            document.addEventListener('dblclick', () => {{
+                // 더블클릭: 시점을 처음 상태로 되돌린다
+                cx = payload.view[0]; cz = payload.view[1]; camDist = payload.view[2]; angle = 0;
+                redraw();
             }});
 
             renderer.render(scene, camera);
