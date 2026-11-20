@@ -4,7 +4,7 @@ risk_engine.py 단위 테스트 (docs/risk_rules.md 9장 수동 검산표, 10장
 실행:  python -m pytest -v test/test_risk_engine.py (프로젝트 폴더에서 실행)
 
 테스트 이름에 문서의 테스트 ID 를 넣어, 실패했을 때 문서의 어느 줄이 깨졌는지 바로 알 수 있게 했다.
-TEST-11 ~ TEST-15 는 이벤트 기록·시뮬레이터·월드 모델이 대상이라 이 파일에서 다루지 않는다.
+TEST-11 ~ TEST-16 는 이벤트 기록·시뮬레이터·월드 모델이 대상이라 이 파일에서 다루지 않는다.
 """
 import math
 
