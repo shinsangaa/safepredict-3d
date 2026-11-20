@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.optim as optim
 
 TRAIN_EPOCHS = 300 # 학습 반복 횟수 (app.py, eval_prediction.py가 함께 사용)
+ACTION_ACCEL_LIMIT = 1.5 # 학습 데이터의 가속도 범위 (m/s²)
+ACTION_YAW_RATE_LIMIT = 1.2 # 학습 데이터의 회전 속도 범위 (rad/s)
 
 class DynamicsWorldModel(nn.Module):
     """
@@ -68,9 +70,9 @@ class IndustrialWorldEngine:
             vx = speed * math.cos(heading)
             vy = speed * math.sin(heading)
 
-            # 행동(Action): 가속도(-2~2 m/s^2), 회전각속도(-1.5~1.5 rad/s)
-            accel = random.uniform(-1.5, 1.5)
-            yaw_rate = random.uniform(-1.2, 1.2)
+            # 행동(Action): 가속도(-1.5~1.5 m/s^2), 회전각속도(-1.2~1.2 rad/s)
+            accel = random.uniform(-ACTION_ACCEL_LIMIT, ACTION_ACCEL_LIMIT)
+            yaw_rate = random.uniform(-ACTION_YAW_RATE_LIMIT, ACTION_YAW_RATE_LIMIT)
 
             # 실제 물리 법칙에 따른 다음 상태(0.1초 후) 계산
             next_speed = max(0.0, min(5.0, speed + accel * self.dt))
@@ -112,6 +114,9 @@ class IndustrialWorldEngine:
         # 각도 차이 정규화 (-pi ~ pi)
         d_heading = (curr_obj["heading"] - prev_obj["heading"] + math.pi) % (2 * math.pi) - math.pi
         yaw_rate = d_heading / self.dt
+        # 학습 범위를 벗어난 값은 범위 끝값으로 제한한다 (모델이 배운 적 없는 입력 방지)
+        accel = max(-ACTION_ACCEL_LIMIT, min(ACTION_ACCEL_LIMIT, accel))
+        yaw_rate = max(-ACTION_YAW_RATE_LIMIT, min(ACTION_YAW_RATE_LIMIT, yaw_rate))
         return accel, yaw_rate
 
     @torch.no_grad()
