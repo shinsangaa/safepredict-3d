@@ -2,7 +2,7 @@
 - 문서명: `data_spec.md`
 - 버전: v0.4 (이벤트 로그·틱별 계산 결과 저장 방식 수정)
 - 작성일: 2026-11-16
-- 수정일: 2026-11-19
+- 수정일: 2026-11-20
 - 적용 범위: 지게차 1대·작업자 1명, S01~S06 시뮬레이션
 
 ## 1. 목적 및 데이터 흐름
@@ -163,7 +163,7 @@
 | `ttc_s` | float/null | Y | `3.0` | 발생 당시 TTC |
 | `dcpa_m` | float | Y | `0.0` | 발생 당시 DCPA |
 | `cri` | float | Y | `0.60` | 발생 당시 CRI |
-| `rule_version` | string | Y | `v0.2` | 위험 규칙 버전 |
+| `rule_version` | string | Y | `v0.3` | 위험 규칙 버전 |
 | `cri_pred` | float | Y | `1.00` | 예측 CRI |
 | `cri_total` | float | Y | `0.90` | 통합 CRI |
 | `trigger` | string | Y | `PREDICTED` | 통합 CRI를 결정한 쪽. `CURRENT`(현재 CRI) 또는 `PREDICTED`(예측 CRI) |
@@ -263,3 +263,4 @@ if abs(a - b) < EPSILON:
 | v0.2 | 2026-11-17 | `risk_result`에 예측·통합 CRI 필드 4개 추가, 예측 궤적(4.1) 절 추가, `risk_event`에 필드 3개 추가, S06 설정 추가, 문서-코드 필드명 대응표 추가 |
 | v0.3 | 2026-11-18 | 월드 모델 가중치 파일 저장 위치 추가 (models/world_model_weights.pt) |
 | v0.4 | 2026-11-19 | 이벤트 로그·틱별 계산 결과의 저장 방식을 세션 보관 + CSV 다운로드로 수정 |
+| v0.4 | 2026-11-20 | 5절 `rule_version` 예시를 v0.3으로 수정. 명세 변경 없음 |

@@ -25,7 +25,7 @@ def load_world_model():
 
 world_engine = load_world_model()
 risk_engine = CollisionRiskEngine()
-RULE_VERSION = "v0.2" # risk_rules.md의 규칙 버전
+RULE_VERSION = "v0.3" # risk_rules.md의 규칙 버전
 SCENARIO_IDS = {
     "parallel": "S01", "stop_approach": "S02", "head_on": "S03",
     "crossing": "S04", "retreat": "S05", "corner_turn": "S06",
