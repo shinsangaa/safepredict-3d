@@ -10,6 +10,7 @@ import streamlit.components.v1 as components
 from simulator import WarehouseSimulator, SCENARIO_MAX_TIME, SCENARIO_STOP_DISTANCE
 from risk_engine import CollisionRiskEngine, EPSILON, classify_level
 from world_model import IndustrialWorldEngine
+from stream_reader import StreamReader
 
 # 1. 페이지 기본 설정 (넓은 관제 화면 레이아웃)
 st.set_page_config(
@@ -74,6 +75,12 @@ if "sim" not in st.session_state:
     st.session_state.run_seq = 1 # 실행 번호 (run_001, run_002, ...)
     st.session_state.run_start = datetime.now(timezone.utc) # 실행 시작 UTC 시각
     st.session_state.risk_results = [] # 틱별 계산 결과 (data_spec.md 4절)
+    st.session_state.input_mode = "내장 시뮬레이터" # 데이터 입력 방식
+    st.session_state.reader = None # 실시간 수신용 읽기 도구
+    st.session_state.rx_run_id = None # 지금 받고 있는 송신의 ID
+    st.session_state.rx_info = None # 마지막으로 받은 메시지
+    st.session_state.rx_delay_ms = 0.0 # 마지막 메시지의 수신 지연(ms)
+    st.session_state.rx_last_time = 0.0 # 마지막으로 받은 시각
 
 def reset_simulation(new_scenario: str):
     st.session_state.scenario = new_scenario
@@ -210,6 +217,18 @@ st.caption("지게차와 작업자의 위치를 추적해, 부딪힐 위험을 �
 # 5. 사이드바: 시나리오 및 시뮬레이션 제어 패널
 with st.sidebar:
     st.header("시나리오 제어")
+
+    input_mode = st.radio("데이터 입력", ["내장 시뮬레이터", "실시간 수신"], horizontal=True)
+    is_receive = input_mode == "실시간 수신"
+    if st.session_state.input_mode != input_mode:
+        # 입력 방식을 바꾸면 화면과 기록을 새로 시작한다
+        st.session_state.input_mode = input_mode
+        st.session_state.is_running = False
+        st.session_state.reader = StreamReader() if is_receive else None
+        st.session_state.rx_run_id = None
+        st.session_state.rx_info = None
+        reset_simulation(st.session_state.scenario)
+        st.rerun()
     
     scenario_map = {
         "S01 정상 이동": "parallel",
@@ -219,16 +238,16 @@ with st.sidebar:
         "S05 접근 후 이탈": "retreat",
         "S06 코너 회전 (월드 모델 검증)": "corner_turn",
     }
-    selected_label = st.selectbox("시연 시나리오 선택", list(scenario_map.keys()))
+    selected_label = st.selectbox("시연 시나리오 선택", list(scenario_map.keys()), disabled=is_receive)
     selected_code = scenario_map[selected_label]
 
-    if selected_code != st.session_state.scenario:
+    if not is_receive and selected_code != st.session_state.scenario:
         reset_simulation(selected_code)
         st.rerun()
 
     view_labels = {"관제 시점 (위에서)": "overview", "지게차 1인칭": "forklift", "작업자 1인칭": "worker"}
     view_mode = view_labels[st.radio("3D 시점", list(view_labels.keys()))]
-    auto_response = st.checkbox("자동 대응 (가상 서행·비상 정지)", value=False)
+    auto_response = st.checkbox("자동 대응 (가상 서행·비상 정지)", value=False, disabled=is_receive)
     play_speed = st.radio("재생 속도", ["1배속", "0.5배속"], horizontal=True)
 
     col_btn1, col_btn2 = st.columns(2)
@@ -261,8 +280,21 @@ with st.sidebar:
 if "latest_data" not in st.session_state:
     process_frame(st.session_state.sim.get_frame())
 
+# 5-1. 실시간 수신: 송신 프로그램이 보낸 프레임을 읽어 같은 계산 과정에 넣는다
+if is_receive:
+    for msg in st.session_state.reader.read_new():
+        if msg["run_id"] != st.session_state.rx_run_id:
+            # 새 송신이 시작됨 -> 기록을 비우고 그 시나리오의 화면 배치로 바꾼다
+            reset_simulation(msg["scenario"])
+            st.session_state.rx_run_id = msg["run_id"]
+        process_frame(msg["frame"])
+        sent_at = datetime.fromisoformat(msg["sent_at"].replace("Z", "+00:00"))
+        st.session_state.rx_delay_ms = (datetime.now(timezone.utc) - sent_at).total_seconds() * 1000
+        st.session_state.rx_last_time = time.time()
+        st.session_state.rx_info = msg
+
 # 6. 시뮬레이션 스텝 진행 (자동 재생 중이거나 수동 스텝 클릭 시 2프레임=0.2초씩 전진)
-if (st.session_state.is_running or step_clicked) and not st.session_state.is_finished:
+if not is_receive and (st.session_state.is_running or step_clicked) and not st.session_state.is_finished:
     stop_distance = SCENARIO_STOP_DISTANCE[st.session_state.scenario]
     max_time = SCENARIO_MAX_TIME[st.session_state.scenario]
 
@@ -283,6 +315,16 @@ if (st.session_state.is_running or step_clicked) and not st.session_state.is_fin
             break
 
 data = st.session_state.latest_data
+
+# 수신 상태 표시
+if is_receive:
+    rx = st.session_state.rx_info
+    if rx is None:
+        st.info("실시간 수신 대기 중입니다. 다른 터미널에서 송신 프로그램을 실행하세요: python sensor_sender.py --scenario head_on")
+    else:
+        idle = time.time() - st.session_state.rx_last_time
+        rx_state = "수신 중" if idle < 1.0 else f"수신 멈춤 (마지막 수신 {idle:.0f}초 전)"
+        st.caption(f"실시간 {rx_state} · 송신 ID {rx['run_id']} · {SCENARIO_IDS[rx['scenario']]} · tick {rx['tick']} · 수신 지연 {st.session_state.rx_delay_ms:.0f} ms")
 
 # 6-1. 경보 배너: 위험 단계, 남은 시간, 권장 조치를 화면 전체 폭으로 크게 보여 준다
 sim = st.session_state.sim
@@ -674,6 +716,6 @@ with col_log:
     )
 
 # 9. 자동 재생 루프 처리 (부드러운 3D 프레임 갱신)
-if st.session_state.is_running:
+if st.session_state.is_running or is_receive:
     time.sleep(0.25)
     st.rerun()
