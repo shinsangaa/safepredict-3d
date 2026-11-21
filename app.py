@@ -1,5 +1,6 @@
 # 실행 명령어 : python -m streamlit run app.py
 import time
+import math
 from datetime import datetime, timezone, timedelta
 import json
 import pandas as pd
@@ -183,6 +184,25 @@ def process_frame(frame):
     st.session_state.prev_wk = wk.copy()
     return curr_risk
 
+def find_risk_point(data):
+    """화면에 표시할 위험 예상 지점 [x, y]를 구한다. 표시할 필요가 없으면 None"""
+    if data["status"] == "SAFE":
+        return None
+    fl, wk = data["forklift"], data["worker"]
+    ttc = data["curr_risk"]["ttc"]
+    if ttc is not None:
+        # 지금 속도를 유지한다고 볼 때, ttc초 뒤 두 객체 위치의 가운데
+        fx = fl["x"] + fl["speed"] * math.cos(fl["heading"]) * ttc
+        fy = fl["y"] + fl["speed"] * math.sin(fl["heading"]) * ttc
+        wx = wk["x"] + wk["speed"] * math.cos(wk["heading"]) * ttc
+        wy = wk["y"] + wk["speed"] * math.sin(wk["heading"]) * ttc
+    else:
+        # 예측 경로에서 두 객체가 가장 가까워지는 순간의 가운데
+        f, w = min(zip(data["fl_traj"], data["wk_traj"]),
+                   key=lambda pair:math.hypot(pair[0]["x"] - pair[1]["x"], pair[0]["y"] - pair[1]["y"]))
+        fx, fy, wx, wy = f["x"], f["y"], w["x"], w["y"]
+    return [round((fx + wx) / 2, 2), round((fy + wy) / 2, 2)]
+
 # 4. 상단 타이틀 및 설명
 st.title("지게차·작업자 충돌 위험 관제")
 st.caption("지게차와 작업자의 위치를 추적해, 부딪힐 위험을 미리 알려 줍니다")
@@ -339,6 +359,7 @@ with col_3d:
         "view": SCENARIO_VIEW[st.session_state.scenario], # 시나리오별 화면 중심·카메라 거리
         "view_mode": view_mode, # 관제 시점 / 지게차 1인칭 / 작업자 1인칭
         "scenario_id": SCENARIO_IDS[st.session_state.scenario], # 시점 저장용 이름에 사용
+        "risk_point": find_risk_point(data), # 위험 예상 지점 [x, y]. 없으면 None
         "time": data["timestamp"] # 경과 시간(초). 걷는 동작에 사용
     })
 
@@ -359,7 +380,7 @@ with col_3d:
     </head>
     <body>
         <div id="info">
-            <span style="color:#f59e0b;">■</span> <b>지게차</b> &nbsp;|&nbsp; <span style="color:#38bdf8;">■</span> <b>작업자</b> &nbsp;|&nbsp; <span style="color:#c084fc;">■</span> <b>예상 경로(2.5초)</b><br>
+            <span style="color:#f59e0b;">■</span> <b>지게차</b> &nbsp;|&nbsp; <span style="color:#38bdf8;">■</span> <b>작업자</b> &nbsp;|&nbsp; <span style="color:#c084fc;">■</span> <b>예상 경로(2.5초)</b> &nbsp;|&nbsp; <span style="color:#ef4444;">◎</span> <b>위험 예상 지점</b><br>
             <span style="color:#94a3b8; font-size:11px;">드래그: 회전 &nbsp;|&nbsp; Shift+드래그: 이동 &nbsp;|&nbsp; 휠: 확대/축소 &nbsp;|&nbsp; 더블클릭: 초기화 &nbsp;|&nbsp; 안전 버블 반경: {data['curr_risk']['safe_radius']:.1f} m</span>
         </div>
         <script>
@@ -527,6 +548,38 @@ with col_3d:
             drawTrajectory(payload.fl_traj, 0xc084fc); // 지게차 미래 예측 궤적 (보라색)
             drawTrajectory(payload.wk_traj, 0x67e8f9); // 작업자 미래 예측 궤적 (하늘색)
 
+            // 6-1. 경보 효과: 위험 예상 지점과 작업자 머리 위 경고 표시
+            const alertColor = bubbleColor; // 위험 단계 색 (주의: 노랑, 위험: 빨강)
+            let riskRing = null, headMark = null;
+
+            if (payload.risk_point) {{
+                // 바닥의 고리와 세로 기둥으로 위험 예상 지점을 표시한다
+                riskRing = new THREE.Mesh(
+                    new THREE.RingGeometry(0.45, 0.7, 32),
+                    new THREE.MeshBasicMaterial({{ color: alertColor, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }})
+                );
+                riskRing.rotation.x = -Math.PI / 2;
+                riskRing.position.set(payload.risk_point[0], 0.08, payload.risk_point[1]);
+                scene.add(riskRing);
+
+                const riskPole = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.05, 0.05, 3.0, 8),
+                    new THREE.MeshBasicMaterial({{ color: alertColor, transparent: true, opacity: 0.7 }})
+                );
+                riskPole.position.set(payload.risk_point[0], 1.5, payload.risk_point[1]);
+                scene.add(riskPole);
+            }}
+
+            if (payload.status !== "SAFE") {{
+                // 작업자 머리 위에 마름모 모양 경고 표시를 띄운다
+                headMark = new THREE.Mesh(
+                    new THREE.OctahedronGeometry(0.22),
+                    new THREE.MeshBasicMaterial({{ color: alertColor }})
+                );
+                headMark.position.set(payload.worker.x, 2.3, payload.worker.y);
+                scene.add(headMark);
+            }}
+
             // 7. 카메라 조작: 드래그(회전), Shift+드래그(이동), 휠(확대/축소), 더블클릭(초기화)
             function redraw() {{
                 updateCamera();
@@ -564,7 +617,22 @@ with col_3d:
                 redraw();
             }});
 
-            renderer.render(scene, camera);
+            // 8. 화면 그리기: 위험 단계에서는 계속 다시 그려서 깜빡이게 한다
+            function animate() {{
+                const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 150); // 0~1 사이를 약 1초 주기로 오간다
+                bubbleFill.material.opacity = 0.10 + 0.30 * pulse;
+                bubbleEdge.material.opacity = 0.40 + 0.60 * pulse;
+                if (riskRing) riskRing.scale.setScalar(1.0 + 0.4 * pulse);
+                if (headMark) headMark.position.y = 2.3 + 0.15 * pulse;
+                renderer.render(scene, camera);
+                requestAnimationFrame(animate);
+            }}
+
+            if (payload.status === "CRITICAL") {{
+                animate();
+            }} else {{
+                renderer.render(scene, camera);
+            }}
         </script>
     </body>
     </html>
