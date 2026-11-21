@@ -56,12 +56,12 @@ INITIAL_CASES = [
     pytest.param((0, 0, 0, 0), (10, 0, -1, 0),
                  10.0, 1.0, 1.0, 10.0, 0.0, 9.0, 0.0, "SAFE",
                  id="S02"),
-    pytest.param((0, 0, 2, 0), (10, 0, -1, 0),
-                 10.0, 3.0, 3.0, 10 / 3, 0.0, 3.0, 0.60, "WARNING",
+    pytest.param((0, 0, 2, 0), (28, 0, -1, 0),
+                 28.0, 3.0, 3.0, 28 / 3, 0.0, 9.0, 0.0, "SAFE",
                  id="S03"),
-    pytest.param((0, 0, 2, 0), (10, 10, 0, -2),
-                 math.sqrt(200), math.sqrt(8), math.sqrt(8), 5.0, 0.0, 5 - math.sqrt(2) / 4,
-                 (6 - (5 - math.sqrt(2) / 4)) / 5, "SAFE",
+    pytest.param((0, 0, 2, 0), (20, 10, 0, -1),
+                 math.sqrt(500), math.sqrt(5), math.sqrt(5), 10.0, 0.0, 10 - 1 / math.sqrt(5),
+                 0.0, "SAFE",
                  id="S04"),
     pytest.param((0, 0, 0, 0), (4, 0, -1, 0),
                  4.0, 1.0, 1.0, 4.0, 0.0, 3.0, 0.60, "WARNING",
@@ -99,16 +99,16 @@ def test_initial_values_match_manual_check(
 
 
 def test_initial_values_match_rounded_numbers_in_doc(engine):
-    """표에 적힌 반올림 값(약 12.81m, 약 4.65초 등)과도 맞는지 한 번 더 확인한다."""
+    """표에 적힌 반올림 값(약 12.81m, 약 9.55초 등)과도 맞는지 한 번 더 확인한다."""
     s01 = engine.calculate_risk(make_obj(0, 0, 2, 0), make_obj(10, 8, 1, 0))
-    s04 = engine.calculate_risk(make_obj(0, 0, 2, 0), make_obj(10, 10, 0, -2))
+    s04 = engine.calculate_risk(make_obj(0, 0, 2, 0), make_obj(20, 10, 0, -1))
     s06 = engine.calculate_risk(make_obj(6, 4, 2.8, 0), make_obj(12.5, 12.5, 0, -1.1))
 
     assert round(s01["distance"], 2) == 12.81
     assert round(s01["closing_speed"], 2) == 0.78
-    assert round(s04["distance"], 2) == 14.14
-    assert round(s04["ttc"], 2) == 4.65
-    assert round(s04["cri"], 2) == 0.27
+    assert round(s04["distance"], 2) == 22.36
+    assert round(s04["ttc"], 2) == 9.55
+    assert round(s04["cri"], 2) == 0.0
     assert round(s06["distance"], 2) == 10.70
     assert round(s06["relative_speed"], 2) == 3.01
     assert round(s06["closing_speed"], 2) == 2.57
@@ -152,19 +152,19 @@ def test_03_moving_apart(engine):
 
 def test_04_s04_crossing(engine):
     """TEST-04: 교차 이동 S04 시작점."""
-    result = engine.calculate_risk(make_obj(0, 0, 2, 0), make_obj(10, 10, 0, -2))
+    result = engine.calculate_risk(make_obj(0, 0, 2, 0), make_obj(20, 10, 0, -1))
 
-    assert result["ttc"] == pytest.approx(4.6464, abs=1e-4)
+    assert result["ttc"] == pytest.approx(9.5528, abs=1e-4)
     assert result["dcpa"] == approx(0.0)
 
 
 def test_05_s03_head_on(engine):
     """TEST-05: S03 시작점."""
-    result = engine.calculate_risk(make_obj(0, 0, 2, 0), make_obj(10, 0, -1, 0))
+    result = engine.calculate_risk(make_obj(0, 0, 2, 0), make_obj(28, 0, -1, 0))
 
-    assert result["ttc"] == approx(3.0)
-    assert result["t_cpa"] == pytest.approx(3.3333, abs=1e-4)
-    assert result["cri"] == approx(0.60)
+    assert result["ttc"] == approx(9.0)
+    assert result["t_cpa"] == pytest.approx(9.3333, abs=1e-4)
+    assert result["cri"] == approx(0.00)
 
 
 def test_06_s05_right_after_turn(engine):

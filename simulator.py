@@ -7,8 +7,8 @@ from dataclasses import dataclass, asdict
 SCENARIO_MAX_TIME = {
     "parallel": 10.0,
     "stop_approach": 10.0,
-    "head_on": 5.0,
-    "crossing": 6.0,
+    "head_on": 10.0,
+    "crossing": 12.0,
     "retreat": 8.0,
     "corner_turn": 6.0,
 }
@@ -63,10 +63,10 @@ class WarehouseSimulator:
             self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)
         elif self.scenario == "head_on": #S03
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
-            self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)
+            self.worker = EntityState("WK_01", "worker", 0.0, x=28.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)
         elif self.scenario == "crossing": #S04
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
-            self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=10.0, z=0.0, speed=2.0, heading=-math.pi / 2)
+            self.worker = EntityState("WK_01", "worker", 0.0, x=20.0, y=10.0, z=0.0, speed=1.0, heading=-math.pi / 2)
         elif self.scenario == "retreat": #S05
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=0.0, heading=0.0)
             self.worker = EntityState("WK_01", "worker", 0.0, x=4.0, y=0.0, z=0.0, speed=1.0, heading=math.pi)         
