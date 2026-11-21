@@ -23,6 +23,11 @@ SCENARIO_STOP_DISTANCE = {
     "corner_turn": 1.0,     # S06
 }
 
+# 가상 자동 대응 설정 (시뮬레이터 안에서만 동작하며, 실제 장비를 제어하지 않는다)
+WARNING_SPEED_LIMIT = 1.0 # 주의 단계: 지게차를 이 속력까지 낮춘다 (m/s)
+BRAKE_DECEL = 1.5         # 지게차 감속도 (m/s²)
+WORKER_STOP_DECEL = 2.0   # 작업자가 멈출 때의 감속도 (m/s²)
+
 # 객체(지게차, 작업자)의 현재 상태를 담는 데이터 구조 정의
 @dataclass
 class EntityState:
@@ -49,6 +54,7 @@ class WarehouseSimulator:
     def reset(self):
         """시나리오에 따른 초기 위치 및 속도 설정"""
         self.current_time = 0.0
+        self.response_state = "NONE" # 자동 대응 상태: NONE(없음) / SLOW(서행) / STOP(비상 정지)
         if self.scenario == "parallel": # S01
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
             self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=8.0, z=0.0, speed=1.0, heading=0.0)
@@ -80,9 +86,30 @@ class WarehouseSimulator:
             "worker": asdict(self.worker)
         }
 
-    def step(self):
+    def _slow_down(self, entity, target_speed, decel):
+        """객체의 속력을 target_speed까지 한 틱만큼 줄인다"""
+        if entity.speed > target_speed:
+            entity.speed = round(max(target_speed, entity.speed - decel * self.dt), 4)
+
+    def is_stopped(self):
+        """비상 정지가 걸렸고 지게차와 작업자가 모두 멈췄으면 True"""
+        return self.response_state == "STOP" and self.forklift.speed == 0.0 and self.worker.speed == 0.0
+
+    def step(self, response_level=None):
         """0.1초(1프레임) 후의 객체 위치 업데이트 및 상태 반환"""
         self.current_time = round(self.current_time + self.dt, 2)
+
+        # 가상 자동 대응: 직전 판정 결과(response_level)에 따라 서행 또는 비상 정지
+        if response_level == "CRITICAL":
+            self.response_state = "STOP"
+        elif response_level == "WARNING" and self.response_state == "NONE":
+            self.response_state = "SLOW"
+
+        if self.response_state == "STOP":
+            self._slow_down(self.forklift, 0.0, BRAKE_DECEL)
+            self._slow_down(self.worker, 0.0, WORKER_STOP_DECEL)
+        elif self.response_state == "SLOW":
+            self._slow_down(self.forklift, WARNING_SPEED_LIMIT, BRAKE_DECEL)
         
         # corner_turn 시나리오일 경우 1.8초~3.3초 사이에 지게차가 좌회전(각속도 적용)
         if self.scenario == "corner_turn" and 1.8 <= self.current_time <= 3.3:

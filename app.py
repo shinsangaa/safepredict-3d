@@ -53,6 +53,12 @@ SCENARIO_VIEW = {
     "corner_turn":   [10.0, 8.0, 18.0],
 }
 
+# 위험 단계별 권장 조치 (화면 표시용)
+RECOMMENDED_ACTIONS = {
+    "WARNING": "지게차 서행, 작업자에게 접근 알림",
+    "CRITICAL": "지게차 즉시 정지, 작업자 대피 알림",
+}
+
 # 3. 세션 상태(Session State) 초기화
 if "sim" not in st.session_state:
     st.session_state.scenario = "parallel"
@@ -202,6 +208,8 @@ with st.sidebar:
 
     view_labels = {"관제 시점 (위에서)": "overview", "지게차 1인칭": "forklift", "작업자 1인칭": "worker"}
     view_mode = view_labels[st.radio("3D 시점", list(view_labels.keys()))]
+    auto_response = st.checkbox("자동 대응 (가상 서행·비상 정지)", value=False)
+    play_speed = st.radio("재생 속도", ["1배속", "0.5배속"], horizontal=True)
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
@@ -238,19 +246,62 @@ if (st.session_state.is_running or step_clicked) and not st.session_state.is_fin
     stop_distance = SCENARIO_STOP_DISTANCE[st.session_state.scenario]
     max_time = SCENARIO_MAX_TIME[st.session_state.scenario]
 
-    for _ in range(2):
-        frame = st.session_state.sim.step()
+    steps = 1 if (play_speed == "0.5배속" and not step_clicked) else 2
+    for _ in range(steps):
+        # 직전 틱의 판정 결과를 시뮬레이터에 전달한다 (자동 대응이 꺼져 있으면 None)
+        response_level = st.session_state.latest_data["status"] if auto_response else None
+        frame = st.session_state.sim.step(response_level)
         curr_risk = process_frame(frame)
 
         # 종료 판정: 이 틱의 계산과 기록을 마친 뒤에 확인한다.
         reached_distance = stop_distance is not None and curr_risk["distance"] <= stop_distance + EPSILON
         reached_time = frame["timestamp"] >= max_time
-        if reached_distance or reached_time:
+        stopped = st.session_state.sim.is_stopped() # 비상 정지로 둘 다 멈춤
+        if reached_distance or reached_time or stopped:
             st.session_state.is_finished = True
             st.session_state.is_running = False
             break
 
 data = st.session_state.latest_data
+
+# 6-1. 경보 배너: 위험 단계, 남은 시간, 권장 조치를 화면 전체 폭으로 크게 보여 준다
+sim = st.session_state.sim
+status = data["status"]
+distance = data["curr_risk"]["distance"]
+ttc = data["curr_risk"]["ttc"]
+fl_speed = data["forklift"]["speed"]
+banner_stop_distance = SCENARIO_STOP_DISTANCE[st.session_state.scenario]
+collided = banner_stop_distance is not None and distance <= banner_stop_distance + EPSILON
+
+if ttc is not None:
+    time_text = f"약 {ttc:.1f}초 뒤 충돌 예상"
+else:
+    time_text = f"예상 경로에서 {data['future_risk']['min_future_dist']:.1f} m까지 접근"
+
+if collided:
+    banner = ("#7f1d1d", "충돌 발생", f"거리 {distance:.2f} m까지 접근했습니다")
+elif sim.is_stopped():
+    banner = ("#1d4ed8", "비상 정지 완료 · 충돌 회피", f"지게차와 작업자가 {distance:.2f} m 거리를 두고 멈췄습니다")
+elif sim.response_state == "STOP":
+    banner = ("#dc2626", "비상 정지 작동 중", f"지게차 제동 중 (속력 {fl_speed:.2f} m/s) · 작업자에게 정지 알림 · 현재 거리 {distance:.2f} m")
+elif status == "CRITICAL":
+    banner = ("#dc2626", f"위험 · {time_text}", f"권장 조치: {RECOMMENDED_ACTIONS['CRITICAL']}")
+elif status == "WARNING":
+    banner = ("#b45309", f"주의 · {time_text}", f"권장 조치: {RECOMMENDED_ACTIONS['WARNING']}")
+else:
+    banner = ("#15803d", "정상", "충돌 위험이 없습니다")
+
+banner_color, banner_title, banner_detail = banner
+if sim.response_state == "SLOW":
+    banner_detail += f" · 자동 대응: 지게차 서행 중 ({fl_speed:.2f} m/s)"
+
+banner_html = (
+    f'<div style="background:{banner_color};color:white;padding:18px 24px;border-radius:12px;margin-bottom:12px;">'
+    f'<div style="font-size:34px;font-weight:800;">{banner_title}</div>'
+    f'<div style="font-size:18px;margin-top:6px;">{banner_detail}</div>'
+    f'</div>'
+)
+st.markdown(banner_html, unsafe_allow_html=True)
 
 # 7. 상단 핵심 지표(KPI) 카드 영역
 m1, m2, m3, m4, m5 = st.columns(5)
