@@ -1,0 +1,30 @@
+# 관제 화면 실행: docker compose up app            (http://localhost:8501)
+# 센서 송신 실행: docker compose run sender        (다른 터미널에서)
+# 정리:          docker compose down
+
+services:
+  # 관제 컨테이너: 공유 폴더에 들어오는 위치 데이터를 읽어 위험을 판정하고 화면에 보여 준다
+  app:
+    build: .
+    image: safepredict-3d
+    ports:
+      - "8501:8501"
+    environment:
+      - STREAM_DIR=/data/stream
+    volumes:
+      - stream-data:/data/stream
+
+  # 센서 컨테이너: 지게차·작업자 위치를 10Hz로 만들어 공유 폴더에 쓴다
+  sender:
+    image: safepredict-3d
+    command: ["python", "sensor_sender.py", "--scenario", "multi_worker"]
+    environment:
+      - STREAM_DIR=/data/stream
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - stream-data:/data/stream
+    profiles: ["send"]
+
+# 두 컨테이너가 함께 쓰는 저장 공간
+volumes:
+  stream-data:
