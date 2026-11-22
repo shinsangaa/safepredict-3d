@@ -137,6 +137,7 @@ def record_event(frame, worker_id, curr_risk, future_risk, total_cri, status):
 
 def process_frame(frame):
     """프레임 1개 처리: 작업자마다 위험 계산 -> 단계 판정 -> 기록. 가장 위험한 작업자를 화면 대표로 저장"""
+    calc_start = time.perf_counter() # 계산 시작 시각 (성능 측정용)
     fl = frame["forklift"]
     workers = frame.get("workers") or [frame["worker"]] # 작업자 목록 (예전 형식의 프레임이면 1명짜리 목록)
 
@@ -218,6 +219,11 @@ def process_frame(frame):
     }
 
     st.session_state.prev_fl = fl.copy()
+
+    # 이 틱의 위험 계산에 걸린 시간(ms): 헹동 추정·예측 롤아웃·위험 계산·기록 포함 (NFR-02)
+    calc_ms = round((time.perf_counter() - calc_start) * 1000, 3)
+    for row in st.session_state.risk_results[-len(workers):]:
+        row["calc_time_ms"] = calc_ms
 
 def find_risk_point(data):
     """화면에 표시할 위험 예상 지점 [x, y]를 구한다. 표시할 필요가 없으면 None"""
@@ -332,6 +338,9 @@ if is_receive:
         st.session_state.rx_delay_ms = (datetime.now(timezone.utc) - sent_at).total_seconds() * 1000
         st.session_state.rx_last_time = time.time()
         st.session_state.rx_info = msg
+
+        for row in st.session_state.risk_results[-len(st.session_state.latest_data["workers"]):]:
+            row["rx_delay_ms"] = round(st.session_state.rx_delay_ms, 1) # 생성 -> 처리 완료까지 걸린 시간
 
 # 6. 시뮬레이션 스텝 진행 (자동 재생 중이거나 수동 스텝 클릭 시 2프레임=0.2초씩 전진)
 if not is_receive and (st.session_state.is_running or step_clicked) and not st.session_state.is_finished:
@@ -814,6 +823,15 @@ with col_log:
         mime="text/csv",
         use_container_width=True,
     )
+
+    # 성능 요약: 틱당 위험 계산 시간, 실시간 수신일 때는 수신 지연도 함께 (NFR-02~04)
+    df_perf = pd.DataFrame(st.session_state.risk_results).drop_duplicates("tick")
+    perf_text = (f"위험 계산 시간({len(df_perf)}틱): 평균 {df_perf['calc_time_ms'].mean():.1f} ms · "
+                 f"P95 {df_perf['calc_time_ms'].quantile(0.95):.1f} ms · 최대 {df_perf['calc_time_ms'].max():.1f} ms")
+    if "rx_delay_ms" in df_perf.columns and df_perf["rx_delay_ms"].notna().any():
+        perf_text += (f"  \n수신 지연(생성→처리 완료): 평균 {df_perf['rx_delay_ms'].mean():.0f} ms · "
+                      f"P95 {df_perf['rx_delay_ms'].quantile(0.95):.0f} ms · 최대 {df_perf['rx_delay_ms'].max():.0f} ms")
+    st.caption(perf_text)
 
 # 9. 자동 재생 루프 처리 (부드러운 3D 프레임 갱신)
 if st.session_state.is_running or is_receive:
