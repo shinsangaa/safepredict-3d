@@ -1,4 +1,7 @@
 # 실행 명령어 : python -m streamlit run app.py
+import os
+import subprocess
+import sys
 import time
 import math
 from datetime import datetime, timezone, timedelta
@@ -238,12 +241,23 @@ with st.sidebar:
         "S05 접근 후 이탈": "retreat",
         "S06 코너 회전 (월드 모델 검증)": "corner_turn",
     }
-    selected_label = st.selectbox("시연 시나리오 선택", list(scenario_map.keys()), disabled=is_receive)
+    selected_label = st.selectbox("시연 시나리오 선택", list(scenario_map.keys()))
     selected_code = scenario_map[selected_label]
 
     if not is_receive and selected_code != st.session_state.scenario:
         reset_simulation(selected_code)
         st.rerun()
+
+    # 실시간 수신 모드: 송신 프로그램을 앱에서 바로 실행하는 버튼 (배포 주소에서도 수신 모드를 볼 수 있게 함)
+    if is_receive:
+        sender = st.session_state.get("sender_proc")
+        sending = sender is not None and sender.poll() is None # 아직 보내는 중이면 True
+        if st.button("시연용 송신 시작", use_container_width=True, disabled=sending):
+            app_dir = os.path.dirname(os.path.abspath(__file__)) # app.py가 있는 폴더
+            st.session_state.sender_proc = subprocess.Popen(
+                [sys.executable, "sensor_sender.py", "--scenario", selected_code],
+                cwd=app_dir,
+            )
 
     view_labels = {"관제 시점 (위에서)": "overview", "지게차 1인칭": "forklift", "작업자 1인칭": "worker"}
     view_mode = view_labels[st.radio("3D 시점", list(view_labels.keys()))]
@@ -316,15 +330,16 @@ if not is_receive and (st.session_state.is_running or step_clicked) and not st.s
 
 data = st.session_state.latest_data
 
-# 수신 상태 표시
+# 수신 상태 표시: 자리를 항상 한 칸 잡아 둔다 (모드에 따라 요소 개수가 달라지면 아래 화면이 밀려서 겹쳐 보인다)
+rx_slot = st.empty() # 내용 없이 자리만 잡는 빈 칸
 if is_receive:
     rx = st.session_state.rx_info
     if rx is None:
-        st.info("실시간 수신 대기 중입니다. 다른 터미널에서 송신 프로그램을 실행하세요: python sensor_sender.py --scenario head_on")
+        rx_slot.info("실시간 수신 대기 중입니다. 왼쪽에서 시나리오를 고르고 [시연용 송신 시작]을 누르면, 송신 프로그램이 보내는 위치 데이터를 받아 판정합니다.")
     else:
         idle = time.time() - st.session_state.rx_last_time
         rx_state = "수신 중" if idle < 1.0 else f"수신 멈춤 (마지막 수신 {idle:.0f}초 전)"
-        st.caption(f"실시간 {rx_state} · 송신 ID {rx['run_id']} · {SCENARIO_IDS[rx['scenario']]} · tick {rx['tick']} · 수신 지연 {st.session_state.rx_delay_ms:.0f} ms")
+        rx_slot.caption(f"실시간 {rx_state} · 송신 ID {rx['run_id']} · {SCENARIO_IDS[rx['scenario']]} · tick {rx['tick']} · 수신 지연 {st.session_state.rx_delay_ms:.0f} ms")
 
 # 6-1. 경보 배너: 위험 단계, 남은 시간, 권장 조치를 화면 전체 폭으로 크게 보여 준다
 sim = st.session_state.sim
