@@ -34,6 +34,7 @@ RULE_VERSION = "v0.3" # risk_rules.md의 규칙 버전
 SCENARIO_IDS = {
     "parallel": "S01", "stop_approach": "S02", "head_on": "S03",
     "crossing": "S04", "retreat": "S05", "corner_turn": "S06",
+    "multi_worker": "S07",
 }
 
 # 시나리오별 랙 배치 (화면 표시용, 충돌 계산에는 반영하지 않음)
@@ -45,6 +46,7 @@ SCENARIO_RACKS = {
     "crossing":      [[9.75, 6.25, 17.5, 5.5], [24.5, 6.25, 6.0, 5.5]],
     "retreat":       [[5.0, 5.0, 12.0, 3.0], [5.0, -3.5, 12.0, 3.0]],
     "corner_turn":   [[9.0, 8.5, 4.5, 4.5]],
+    "multi_worker":  [[10.5, 4.5, 17.0, 3.0], [27.0, 4.5, 6.0, 3.0], [13.0, -3.5, 26.0, 3.0]],
 }
 
 # 시나리오별 화면 중심과 카메라 거리 (화면 표시용)
@@ -56,6 +58,7 @@ SCENARIO_VIEW = {
     "crossing":      [13.0, 4.0, 18.0],
     "retreat":       [5.0, 0.0, 12.0],
     "corner_turn":   [10.0, 8.0, 18.0],
+    "multi_worker":  [13.0, 2.0, 20.0],
 }
 
 # 위험 단계별 권장 조치 (화면 표시용)
@@ -69,11 +72,11 @@ if "sim" not in st.session_state:
     st.session_state.scenario = "parallel"
     st.session_state.sim = WarehouseSimulator(scenario="parallel")
     st.session_state.prev_fl = None
-    st.session_state.prev_wk = None
+    st.session_state.prev_wks = {} # 작업자별 직전 상태 (작업자 ID -> 상태)
     st.session_state.event_logs = []
     st.session_state.is_running = False
     st.session_state.is_finished = False # 시나리오 종료 여부
-    st.session_state.prev_level = None # 직전 위험 단계 (None = 아직 판정 전)
+    st.session_state.prev_levels = {} # 작업자별 직전 위험 단계 (없으면 아직 판정 전)
     st.session_state.event_seq = 0 # 이번 실행에서 발급한 이벤트 번호
     st.session_state.run_seq = 1 # 실행 번호 (run_001, run_002, ...)
     st.session_state.run_start = datetime.now(timezone.utc) # 실행 시작 UTC 시각
@@ -89,19 +92,19 @@ def reset_simulation(new_scenario: str):
     st.session_state.scenario = new_scenario
     st.session_state.sim = WarehouseSimulator(scenario=new_scenario)
     st.session_state.prev_fl = None
-    st.session_state.prev_wk = None
+    st.session_state.prev_wks = {}
     st.session_state.event_logs = []
     st.session_state.is_finished = False # 종료 상태 해제
     st.session_state.pop("latest_data", None) # 이전 화면 데이터 삭제
-    st.session_state.prev_level = None
+    st.session_state.prev_levels = {}
     st.session_state.event_seq = 0
     st.session_state.run_seq += 1
     st.session_state.run_start = datetime.now(timezone.utc)
     st.session_state.risk_results = []
 
-def record_event(frame, curr_risk, future_risk, total_cri, status):
-    """위험 단계가 바뀐 틱에만 이벤트 1건 기록 (risk_rules.md 8절)"""
-    prev_level = st.session_state.prev_level
+def record_event(frame, worker_id, curr_risk, future_risk, total_cri, status):
+    """위험 단계가 바뀐 틱에만 이벤트 1건 기록 (risk_rules.md 8절). 작업자마다 따로 판단한다"""
+    prev_level = st.session_state.prev_levels.get(worker_id) # 이 작업자의 직전 단계 (없으면 None)
     if status == prev_level:
         return # 같은 단계 유지 -> 기록하지 않음
 
@@ -114,6 +117,7 @@ def record_event(frame, curr_risk, future_risk, total_cri, status):
         "event_id": f"evt_{st.session_state.event_seq:04d}",
         "run_id": f"run_{st.session_state.run_seq:03d}",
         "scenario_id": SCENARIO_IDS[st.session_state.scenario],
+        "worker_id": worker_id,
         "tick": round(sim_time * 10),
         "simulation_time_s": sim_time,
         "timestamp": event_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
@@ -129,70 +133,91 @@ def record_event(frame, curr_risk, future_risk, total_cri, status):
         "cri_total": total_cri,
         "trigger": "CURRENT" if curr_risk["cri"] >= 0.9 * cri_pred else "PREDICTED",
     })
-    st.session_state.prev_level = status
+    st.session_state.prev_levels[worker_id] = status
 
 def process_frame(frame):
-    """프레임 1개 처리: 위험 계산 -> 단계 판정 -> 화면 데이터 저장 -> 이벤트 기록"""
+    """프레임 1개 처리: 작업자마다 위험 계산 -> 단계 판정 -> 기록. 가장 위험한 작업자를 화면 대표로 저장"""
     fl = frame["forklift"]
-    wk = frame["worker"]
+    workers = frame.get("workers") or [frame["worker"]] # 작업자 목록 (예전 형식의 프레임이면 1명짜리 목록)
 
-    # 현재 CRI
-    curr_risk = risk_engine.calculate_risk(fl, wk)
-
-    # 예측 CRI (첫 틱은 직전 값이 없어 추정 행동이 (0, 0))
+    # 지게차의 행동 추정과 예측 경로는 한 번만 계산해 모든 작업자에게 같이 쓴다
     fl_act = world_engine.estimate_action(st.session_state.prev_fl, fl)
-    wk_act = world_engine.estimate_action(st.session_state.prev_wk, wk)
     fl_traj = world_engine.imagine_rollout(fl, fl_act, horizon_steps=25)
-    wk_traj = world_engine.imagine_rollout(wk, wk_act, horizon_steps=25)
-    future_risk = world_engine.evaluate_future_risk(fl_traj, wk_traj, risk_engine)
 
-    # 통합 CRI와 위험 단계
-    total_cri = round(max(curr_risk["cri"], 0.9 * future_risk["max_pred_cri"]), 3)
-    status = classify_level(total_cri)
+    sim_time = frame["timestamp"]
+    tick_time = st.session_state.run_start + timedelta(seconds=sim_time)
+    worker_results = []
+
+    for wk in workers:
+        wk_id = wk["entity_id"]
+
+        # 현재 CRI
+        curr_risk = risk_engine.calculate_risk(fl, wk)
+
+        # 예측 CRI (첫 틱은 직전 값이 없어 추정 행동이 (0, 0))
+        wk_act = world_engine.estimate_action(st.session_state.prev_wks.get(wk_id), wk)
+        wk_traj = world_engine.imagine_rollout(wk, wk_act, horizon_steps=25)
+        future_risk = world_engine.evaluate_future_risk(fl_traj, wk_traj, risk_engine)
+        
+        # 통합 CRI와 위험 단계
+        total_cri = round(max(curr_risk["cri"], 0.9 * future_risk["max_pred_cri"]), 3)
+        status = classify_level(total_cri)
+
+        worker_results.append({
+            "worker": wk,
+            "wk_traj": wk_traj,
+            "curr_risk": curr_risk,
+            "future_risk": future_risk,
+            "total_cri": total_cri,
+            "status": status
+        })
+
+        # 틱별 계산 결과 저장 (data_spec.md 4절 risk_result): 작업자마다 한 줄
+        cri_pred = future_risk["max_pred_cri"]
+        st.session_state.risk_results.append({
+            "run_id": f"run_{st.session_state.run_seq:03d}",
+            "scenario_id": SCENARIO_IDS[st.session_state.scenario],
+            "worker_id": wk_id,
+            "tick": round(sim_time * 10),
+            "simulation_time_s": sim_time,
+            "timestamp": tick_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "distance_m": round(curr_risk["distance"], 3),
+            "relative_speed_mps": round(curr_risk["relative_speed"], 3),
+            "closing_speed_mps": round(curr_risk["closing_speed"], 3),
+            "ttc_s": None if curr_risk["ttc"] is None else round(curr_risk["ttc"], 3),
+            "t_cpa_s": round(curr_risk["t_cpa"], 3),
+            "dcpa_m": round(curr_risk["dcpa"], 3),
+            "safe_radius_m": round(curr_risk["safe_radius"], 3),
+            "cri": round(curr_risk["cri"], 3),
+            "risk_level": status,
+            "collision_predicted": curr_risk["collision_predicted"],
+            "cri_pred": cri_pred,
+            "cri_total": total_cri,
+            "min_future_distance_m": future_risk["min_future_dist"],
+            "critical_offset_s": None if cri_pred == 0 else future_risk["critical_offset"],
+        })
+
+        record_event(frame, wk_id, curr_risk, future_risk, total_cri, status)
+        st.session_state.prev_wks[wk_id] = wk.copy()
+
+    # 가장 위험한 작업자(통합 CRI가 가장 큰 사람)를 화면 대표로 삼는다. 값이 같으면 더 가까운 사람
+    top = max(worker_results, key=lambda r: (r["total_cri"], -r["curr_risk"]["distance"]))
 
     st.session_state.latest_data = {
         "timestamp": frame["timestamp"],
         "forklift": fl,
-        "worker": wk,
+        "worker": top["worker"],
         "fl_traj": fl_traj,
-        "wk_traj": wk_traj,
-        "curr_risk": curr_risk,
-        "future_risk": future_risk,
-        "total_cri": total_cri,
-        "status": status
+        "wk_traj": top["wk_traj"],
+        "curr_risk": top["curr_risk"],
+        "future_risk": top["future_risk"],
+        "total_cri": top["total_cri"],
+        "status": top["status"],
+        "workers": worker_results, # 작업자별 결과 전체 (3D 화면과 작업자별 표에서 사용)
+        "min_distance": min(r["curr_risk"]["distance"] for r in worker_results), # 가장 가까운 작업자와의 거리
     }
 
-    # 틱별 계산 결과 저장 (data_spec.md 4절 risk_result)
-    sim_time = frame["timestamp"]
-    tick_time = st.session_state.run_start + timedelta(seconds=sim_time)
-    cri_pred = future_risk["max_pred_cri"]
-    st.session_state.risk_results.append({
-        "run_id": f"run_{st.session_state.run_seq:03d}",
-        "scenario_id": SCENARIO_IDS[st.session_state.scenario],
-        "tick": round(sim_time * 10),
-        "simulation_time_s": sim_time,
-        "timestamp": tick_time.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "distance_m": round(curr_risk["distance"], 3),
-        "relative_speed_mps": round(curr_risk["relative_speed"], 3),
-        "closing_speed_mps": round(curr_risk["closing_speed"], 3),
-        "ttc_s": None if curr_risk["ttc"] is None else round(curr_risk["ttc"], 3),
-        "t_cpa_s": round(curr_risk["t_cpa"], 3),
-        "dcpa_m": round(curr_risk["dcpa"], 3),
-        "safe_radius_m": round(curr_risk["safe_radius"], 3),
-        "cri": round(curr_risk["cri"], 3),
-        "risk_level": status,
-        "collision_predicted": curr_risk["collision_predicted"],
-        "cri_pred": cri_pred,
-        "cri_total": total_cri,
-        "min_future_distance_m": future_risk["min_future_dist"],
-        "critical_offset_s": None if cri_pred == 0 else future_risk["critical_offset"],
-    })
-
-    record_event(frame, curr_risk, future_risk, total_cri, status)
-
     st.session_state.prev_fl = fl.copy()
-    st.session_state.prev_wk = wk.copy()
-    return curr_risk
 
 def find_risk_point(data):
     """화면에 표시할 위험 예상 지점 [x, y]를 구한다. 표시할 필요가 없으면 None"""
@@ -240,6 +265,7 @@ with st.sidebar:
         "S04 교차 이동": "crossing",
         "S05 접근 후 이탈": "retreat",
         "S06 코너 회전 (월드 모델 검증)": "corner_turn",
+        "S07 다중 작업자 (5명)": "multi_worker",
     }
     selected_label = st.selectbox("시연 시나리오 선택", list(scenario_map.keys()))
     selected_code = scenario_map[selected_label]
@@ -317,10 +343,10 @@ if not is_receive and (st.session_state.is_running or step_clicked) and not st.s
         # 직전 틱의 판정 결과를 시뮬레이터에 전달한다 (자동 대응이 꺼져 있으면 None)
         response_level = st.session_state.latest_data["status"] if auto_response else None
         frame = st.session_state.sim.step(response_level)
-        curr_risk = process_frame(frame)
+        process_frame(frame)
 
         # 종료 판정: 이 틱의 계산과 기록을 마친 뒤에 확인한다.
-        reached_distance = stop_distance is not None and curr_risk["distance"] <= stop_distance + EPSILON
+        reached_distance = stop_distance is not None and st.session_state.latest_data["min_distance"] <= stop_distance + EPSILON
         reached_time = frame["timestamp"] >= max_time
         stopped = st.session_state.sim.is_stopped() # 비상 정지로 둘 다 멈춤
         if reached_distance or reached_time or stopped:
@@ -348,7 +374,8 @@ distance = data["curr_risk"]["distance"]
 ttc = data["curr_risk"]["ttc"]
 fl_speed = data["forklift"]["speed"]
 banner_stop_distance = SCENARIO_STOP_DISTANCE[st.session_state.scenario]
-collided = banner_stop_distance is not None and distance <= banner_stop_distance + EPSILON
+collided = banner_stop_distance is not None and data["min_distance"] <= banner_stop_distance + EPSILON
+who = f"{data['worker']['entity_id']} · " if len(data["workers"]) > 1 else "" # 작업자가 여러 명일 때만 누구인지 표시
 
 if ttc is not None:
     time_text = f"약 {ttc:.1f}초 뒤 충돌 예상"
@@ -356,15 +383,15 @@ else:
     time_text = f"예상 경로에서 {data['future_risk']['min_future_dist']:.1f} m까지 접근"
 
 if collided:
-    banner = ("#7f1d1d", "충돌 발생", f"거리 {distance:.2f} m까지 접근했습니다")
+    banner = ("#7f1d1d", "충돌 발생", f"{who}거리 {distance:.2f} m까지 접근했습니다")
 elif sim.is_stopped():
     banner = ("#1d4ed8", "비상 정지 완료 · 충돌 회피", f"지게차와 작업자가 {distance:.2f} m 거리를 두고 멈췄습니다")
 elif sim.response_state == "STOP":
     banner = ("#dc2626", "비상 정지 작동 중", f"지게차 제동 중 (속력 {fl_speed:.2f} m/s) · 작업자에게 정지 알림 · 현재 거리 {distance:.2f} m")
 elif status == "CRITICAL":
-    banner = ("#dc2626", f"위험 · {time_text}", f"권장 조치: {RECOMMENDED_ACTIONS['CRITICAL']}")
+    banner = ("#dc2626", f"위험 · {who}{time_text}", f"권장 조치: {RECOMMENDED_ACTIONS['CRITICAL']}")
 elif status == "WARNING":
-    banner = ("#b45309", f"주의 · {time_text}", f"권장 조치: {RECOMMENDED_ACTIONS['WARNING']}")
+    banner = ("#b45309", f"주의 · {who}{time_text}", f"권장 조치: {RECOMMENDED_ACTIONS['WARNING']}")
 else:
     banner = ("#15803d", "정상", "충돌 위험이 없습니다")
 
@@ -417,6 +444,12 @@ with col_3d:
         "view_mode": view_mode, # 관제 시점 / 지게차 1인칭 / 작업자 1인칭
         "scenario_id": SCENARIO_IDS[st.session_state.scenario], # 시점 저장용 이름에 사용
         "risk_point": find_risk_point(data), # 위험 예상 지점 [x, y]. 없으면 None
+        "workers": [
+            {"id": r["worker"]["entity_id"], "x": r["worker"]["x"], "y": r["worker"]["y"],
+             "speed": r["worker"]["speed"], "heading": r["worker"]["heading"],
+             "status": r["status"], "traj": r["wk_traj"]}
+             for r in data["workers"]
+        ], # 작업자 전원의 위치·단계·예상 경로
         "time": data["timestamp"] # 경과 시간(초). 걷는 동작에 사용
     })
 
@@ -472,7 +505,7 @@ with col_3d:
                     camera.lookAt(cx, 0, cz);
                 }} else {{
                     // 1인칭 시점: 선택한 객체의 눈높이에서 진행 방향을 본다 (드래그하면 좌우로 둘러봄)
-                    const me = payload.view_mode === "forklift" ? payload.forklift : payload.worker;
+                    const me = payload.view_mode === "forklift" ? payload.forklift : payload.workers[0];
                     const eye = payload.view_mode === "forklift" ? 2.0 : 1.6;
                     const look = me.heading + angle;
                     camera.fov = 70;
@@ -546,40 +579,86 @@ with col_3d:
             flGroup.rotation.y = -payload.forklift.heading;
             scene.add(flGroup);
 
-            // 5. 작업자 3D 객체: 머리·몸통·팔·다리로 만든 사람 모양
-            const wkGroup = new THREE.Group();
+            // 5. 작업자 3D 객체: 머리·몸통·팔·다리로 만든 사람 모양. 작업자 수만큼 만든다
             const wkMat = new THREE.MeshLambertMaterial({{ color: 0x38bdf8 }});
+            const levelColors = {{ SAFE: 0x22c55e, WARNING: 0xeab308, CRITICAL: 0xef4444 }};
+            const showLabels = payload.workers.length > 1; // 여러 명일 때만 머리 위에 ID를 띄운다
+            const markY = showLabels ? 3.4 : 2.3; // 경고 표시 높이 (ID 글자와 겹치지 않게)
+            const headMarks = [];
 
-            const wkHead = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), wkMat);
-            wkHead.position.y = 1.55;
-            wkGroup.add(wkHead);
+            // 글자를 그린 작은 그림을 3D 공간에 띄운다 (항상 카메라 쪽을 향한다)
+            function makeLabel(text, cssColor) {{
+                const canvas = document.createElement('canvas');
+                canvas.width = 128; canvas.height = 48;
+                const ctx = canvas.getContext('2d');
+                ctx.font = 'bold 34px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = cssColor;
+                ctx.fillText(text, 64, 24);
+                const sprite = new THREE.Sprite(new THREE.SpriteMaterial({{ map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: false }}));
+                sprite.scale.set(3.2, 1.2, 1);
+                return sprite;
+            }}
 
-            const wkBody = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.6, 12), wkMat);
-            wkBody.position.y = 1.1;
-            wkGroup.add(wkBody);
 
             // 팔다리 하나를 만든다: 위쪽 끝(어깨·골반)을 축으로 앞뒤로 흔들 수 있게 그룹에 담는다
-            function addLimb(length, radius, jointY, sideZ, swingAngle) {{
+            function addLimb(group, length, radius, jointY, sideZ, swingAngle) {{
                 const joint = new THREE.Group();
                 joint.position.set(0, jointY, sideZ);
                 const limb = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 8), wkMat);
                 limb.position.y = -length / 2;
                 joint.add(limb);
                 joint.rotation.z = swingAngle;
-                wkGroup.add(joint);
+                group.add(joint);
             }}
 
-            // 걷는 동작: 경과 시간에 따라 팔다리 각도를 바꾼다 (0.2초마다 앞, 가운데, 뒤, 가운데 순서)
-            const swing = payload.worker.speed > 0 ? Math.sin(payload.time * Math.PI / 0.4) * 0.6 : 0;
-            addLimb(0.8, 0.08, 0.8, 0.1, swing);   // 한쪽 다리
-            addLimb(0.8, 0.08, 0.8, -0.1, -swing); // 반대쪽 다리
-            addLimb(0.6, 0.06, 1.38, 0.2, -swing); // 한쪽 팔 (같은 쪽 다리와 반대로)
-            addLimb(0.6, 0.06, 1.38, -0.2, swing); // 반대쪽 팔
+            payload.workers.forEach((w, index) => {{
+                // 작업자 1인칭에서는 자기 자신(첫 번째 작업자)을 그리지 않는다
+                if (payload.view_mode === "worker" && index === 0) return;
 
-            wkGroup.position.set(payload.worker.x, 0, payload.worker.y);
-            wkGroup.rotation.y = -payload.worker.heading; // 진행 방향을 보게 돌린다
-            if (payload.view_mode === "worker") wkGroup.visible = false; // 작업자 1인칭에서는 자기 몸을 그리지 않는다
-            scene.add(wkGroup);
+                const wkGroup = new THREE.Group();
+
+                const wkHead = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), wkMat);
+                wkHead.position.y = 1.55;
+                wkGroup.add(wkHead);
+
+                const wkBody = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.6, 12), wkMat);
+                wkBody.position.y = 1.1;
+                wkGroup.add(wkBody);
+
+                // 걷는 동작: 경과 시간에 따라 팔다리 각도를 바꾼다 (멈춰 있으면 가만히 선다)
+                const swing = w.speed > 0 ? Math.sin(payload.time * Math.PI / 0.4) * 0.6 : 0;
+                addLimb(wkGroup, 0.8, 0.08, 0.8, 0.1, swing);   // 한쪽 다리
+                addLimb(wkGroup, 0.8, 0.08, 0.8, -0.1, -swing); // 반대쪽 다리
+                addLimb(wkGroup, 0.6, 0.06, 1.38, 0.2, -swing); // 한쪽 팔 (같은 쪽 다리와 반대로)
+                addLimb(wkGroup, 0.6, 0.06, 1.38, -0.2, swing); // 반대쪽 팔
+
+                wkGroup.position.set(w.x, 0, w.y);
+                wkGroup.rotation.y = -w.heading; // 진행 방향을 보게 돌린다
+                scene.add(wkGroup);
+
+                // 머리 위 ID: 위험 단계에 따라 글자색이 바뀐다 (정상: 흰색, 주의: 노랑, 위험: 빨강)
+                if (showLabels) {{
+                    const cssColor = w.status === "CRITICAL" ? "#ef4444" : (w.status === "WARNING" ? "#eab308" : "#e2e8f0");
+                    const label = makeLabel(w.id, cssColor);
+                    label.position.set(w.x, 2.5, w.y);
+                    scene.add(label);
+                }}
+
+                // 주의·위험인 작업자 머리 위에 마름모 모양 경고 표시를 띄운다
+                if (w.status !== "SAFE") {{
+                    const mark = new THREE.Mesh(
+                        new THREE.OctahedronGeometry(0.22),
+                        new THREE.MeshBasicMaterial({{ color: levelColors[w.status ]}})
+                    );
+                    mark.position.set(w.x, markY, w.y);
+                    scene.add(mark);
+                    headMarks.push(mark);
+                }}
+            }});
+
+
 
             // 6. 월드 모델 예측 미래 궤적 (Imagination Rollout 잔상 렌더링)
             function drawTrajectory(trajPoints, colorHex) {{
@@ -603,11 +682,13 @@ with col_3d:
             }}
 
             drawTrajectory(payload.fl_traj, 0xc084fc); // 지게차 미래 예측 궤적 (보라색)
-            drawTrajectory(payload.wk_traj, 0x67e8f9); // 작업자 미래 예측 궤적 (하늘색)
+            payload.workers.forEach(w => {{
+                if (w.speed > 0) drawTrajectory(w.traj, 0x67e8f9); // 움직이는 작업자의 미래 예측 궤적 (하늘색)
+            }});
 
             // 6-1. 경보 효과: 위험 예상 지점과 작업자 머리 위 경고 표시
             const alertColor = bubbleColor; // 위험 단계 색 (주의: 노랑, 위험: 빨강)
-            let riskRing = null, headMark = null;
+            let riskRing = null;
 
             if (payload.risk_point) {{
                 // 바닥의 고리와 세로 기둥으로 위험 예상 지점을 표시한다
@@ -625,16 +706,6 @@ with col_3d:
                 );
                 riskPole.position.set(payload.risk_point[0], 1.5, payload.risk_point[1]);
                 scene.add(riskPole);
-            }}
-
-            if (payload.status !== "SAFE") {{
-                // 작업자 머리 위에 마름모 모양 경고 표시를 띄운다
-                headMark = new THREE.Mesh(
-                    new THREE.OctahedronGeometry(0.22),
-                    new THREE.MeshBasicMaterial({{ color: alertColor }})
-                );
-                headMark.position.set(payload.worker.x, 2.3, payload.worker.y);
-                scene.add(headMark);
             }}
 
             // 7. 카메라 조작: 드래그(회전), Shift+드래그(이동), 휠(확대/축소), 더블클릭(초기화)
@@ -680,7 +751,7 @@ with col_3d:
                 bubbleFill.material.opacity = 0.10 + 0.30 * pulse;
                 bubbleEdge.material.opacity = 0.40 + 0.60 * pulse;
                 if (riskRing) riskRing.scale.setScalar(1.0 + 0.4 * pulse);
-                if (headMark) headMark.position.y = 2.3 + 0.15 * pulse;
+                headMarks.forEach(m => {{ m.position.y = markY + 0.15 * pulse; }});
                 renderer.render(scene, camera);
                 requestAnimationFrame(animate);
             }}
@@ -696,15 +767,29 @@ with col_3d:
     """
     components.html(threejs_html, height=465)
 
+    # 작업자별 상태 표: 누가 어떤 단계인지 한눈에 본다
+    level_names = {"SAFE": "정상", "WARNING": "주의", "CRITICAL": "위험"}
+    level_styles = {"주의": "background-color: #b45309; color: white", "위험": "background-color: #dc2626; color: white"}
+    df_workers = pd.DataFrame({
+        "작업자": [r["worker"]["entity_id"] for r in data["workers"]],
+        "단계": [level_names[r["status"]] for r in data["workers"]],
+        "통합 위험도": [r["total_cri"] for r in data["workers"]],
+        "거리(m)": [round(r["curr_risk"]["distance"], 2) for r in data["workers"]],
+        "충돌 예상(초)": ["-" if r["curr_risk"]["ttc"] is None else f"{r['curr_risk']['ttc']:.1f}" for r in data["workers"]],
+    })
+    st.dataframe(df_workers.style.format({"통합 위험도": "{:.3f}", "거리(m)": "{:.2f}"}).map(lambda v: level_styles.get(v, ""), subset=["단계"]),
+                 use_container_width=True, hide_index=True)
+
 with col_log:
     st.subheader("위험 단계 변경 이력")
     if len(st.session_state.event_logs) > 0:
         df_logs = pd.DataFrame(st.session_state.event_logs)
         df_view = pd.DataFrame({
             "시간(s)": df_logs["simulation_time_s"].map(lambda t: f"{t:.1f}"),
-            "이벤트": df_logs["event_type"],
-            "이전 단계": df_logs["previous_level"].fillna("-"),
-            "현재 단계": df_logs["current_level"],
+            "작업자": df_logs["worker_id"],
+            "이벤트": df_logs["event_type"].map({"INIT": "시작", "LEVEL_CHANGE": "변경"}),
+            "이전 단계": df_logs["previous_level"].map(level_names).fillna("-"),
+            "현재 단계": df_logs["current_level"].map(level_names),
             "통합 CRI": df_logs["cri_total"],
             "거리(m)": df_logs["distance_m"].round(2),
             "원인": df_logs["trigger"].map({"CURRENT": "현재", "PREDICTED": "예측"}),

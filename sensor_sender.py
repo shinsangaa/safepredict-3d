@@ -48,8 +48,8 @@ def main():
             f.flush()                           # 바로 파일에 내보내서 수신 쪽이 읽을 수 있게 한다
 
             # 종료 판정: 최대 실행시간 또는 거리 1m 이하 (scenarios.md 3장)
-            fl, wk = frame["forklift"], frame["worker"]
-            distance = math.hypot(wk["x"] - fl["x"], wk["y"] - fl["y"])
+            fl = frame["forklift"]
+            distance = min(math.hypot(wk["x"] - fl["x"], wk["y"] - fl["y"]) for wk in frame["workers"]) # 가장 가까운 작업자와의 거리
             if frame["timestamp"] >= max_time:
                 break
             if stop_distance is not None and distance <= stop_distance + 1e-6:

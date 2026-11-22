@@ -248,4 +248,39 @@ def test_s06_current_cri_jumps_to_critical(engine):
     # 3.6초에 거리 약 0.91m 로 종료
     assert end_time == 3.6
     assert result_by_time[3.6]["distance"] == pytest.approx(0.91, abs=0.005)
-    
+
+
+# ---------------------------------------------------------------------------
+# S07 다중 작업자: 시뮬레이터가 작업자 목록을 내보내는지, 누구와 언제 가까워지는지
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("scenario", ["parallel", "stop_approach", "head_on", "crossing", "retreat", "corner_turn"])
+def test_single_worker_scenarios_have_one_worker(scenario):
+    """S01~S06: 작업자 목록은 1명이고, 기존 'worker' 값과 같다."""
+    frame = WarehouseSimulator(scenario=scenario).step()
+
+    assert len(frame["workers"]) == 1
+    assert frame["workers"][0] == frame["worker"]
+
+def test_s07_has_five_workers():
+    """S07: 작업자 5명이 ID 순서대로 들어 있다."""
+    frame = WarehouseSimulator(scenario="multi_worker").get_frame()
+
+    assert [w["entity_id"] for w in frame["workers"]] == ["WK_01", "WK_02", "WK_03", "WK_04", "WK_05"]
+    assert frame["worker"] == frame["workers"][0]
+
+def test_s07_only_wk01_reaches_collision_distance(engine):
+    """S07: 1m 이하로 가까워지는 사람은 WK_01뿐이고, 10.6초에 약 0.894m가 된다."""
+    sim = WarehouseSimulator(scenario="multi_worker")
+    end_time, closest_id, closest_distance = None, None, None
+    for _ in range(120):
+        frame = sim.step()
+        distances = {w["entity_id"]: engine.calculate_risk(frame["forklift"], w)["distance"] for w in frame["workers"]}
+        closest_id = min(distances, key=distances.get)
+        closest_distance = distances[closest_id]
+        if closest_distance <= 1.0:
+            end_time = frame["timestamp"]
+            break
+
+    assert end_time == 10.6
+    assert closest_id == "WK_01"
+    assert closest_distance == pytest.approx(0.894, abs=0.001)

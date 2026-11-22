@@ -11,6 +11,7 @@ SCENARIO_MAX_TIME = {
     "crossing": 12.0,
     "retreat": 8.0,
     "corner_turn": 6.0,
+    "multi_worker": 12.0,
 }
 
 # 시나리오별 종료 거리(m) - scenarios.md 3장. None이면 거리로는 종료하지 않는다.
@@ -21,6 +22,7 @@ SCENARIO_STOP_DISTANCE = {
     "crossing": 1.0,        # S04
     "retreat": None,        # S05
     "corner_turn": 1.0,     # S06
+    "multi_worker": 1.0,    # S07
 }
 
 # 가상 자동 대응 설정 (시뮬레이터 안에서만 동작하며, 실제 장비를 제어하지 않는다)
@@ -55,6 +57,7 @@ class WarehouseSimulator:
         """시나리오에 따른 초기 위치 및 속도 설정"""
         self.current_time = 0.0
         self.response_state = "NONE" # 자동 대응 상태: NONE(없음) / SLOW(서행) / STOP(비상 정지)
+        self.workers = None # 작업자 목록. S07만 직접 채우고, 나머지는 아래에서 1명짜리 목록으로 만든다
         if self.scenario == "parallel": # S01
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
             self.worker = EntityState("WK_01", "worker", 0.0, x=10.0, y=8.0, z=0.0, speed=1.0, heading=0.0)
@@ -75,15 +78,29 @@ class WarehouseSimulator:
             self.forklift = EntityState("FL_01", "forklift", 0.0, x=6.0, y=4.0, z=0.0, speed=2.8, heading=0.0)
             # 작업자: 통로 안쪽 (12.5, 12.0)에서 남쪽으로 걸어 내려오는 중
             self.worker = EntityState("WK_01", "worker", 0.0, x=12.5, y=12.5, z=0.0, speed=1.1, heading=-math.pi / 2)
+        elif self.scenario == "multi_worker": # S07 작업자 5명
+            self.forklift = EntityState("FL_01", "forklift", 0.0, x=0.0, y=0.0, z=0.0, speed=2.0, heading=0.0)
+            self.workers = [
+                EntityState("WK_01", "worker", 0.0, x=22.0, y=11.0, z=0.0, speed=1.0, heading=-math.pi / 2), # 통로를 가로질러 옴
+                EntityState("WK_02", "worker", 0.0, x=10.0, y=1.8, z=0.0, speed=0.0, heading=0.0),           # 통로 옆에서 정지 작업
+                EntityState("WK_03", "worker", 0.0, x=4.0, y=8.0, z=0.0, speed=1.0, heading=0.0),            # 옆 통로를 나란히 이동
+                EntityState("WK_04", "worker", 0.0, x=6.0, y=-7.0, z=0.0, speed=0.0, heading=0.0),           # 멀리서 정지 작업
+                EntityState("WK_05", "worker", 0.0, x=16.0, y=-7.0, z=0.0, speed=1.0, heading=0.0),          # 반대편 통로를 이동
+            ]
+            self.worker = self.workers[0] # 기존 코드가 쓰는 대표 작업자
         else:
-            raise ValueError("지원하지 않는 시나리오입니다. 'parallel', 'stop_approach', 'head_on', 'crossing', 'retreat', 'corner_turn' 중 선택하세요.")
+            raise ValueError("지원하지 않는 시나리오입니다. 'parallel', 'stop_approach', 'head_on', 'crossing', 'retreat', 'corner_turn', 'multi_worker' 중 선택하세요.")
+
+        if self.workers is None:
+            self.workers = [self.worker] # 기존 시나리오는 1명짜리 목록
 
     def get_frame(self):
         """시간을 진행하지 않고 현재 상태만 반환 (tick 0 초기 판정용)"""
         return {
             "timestamp": self.current_time,
             "forklift": asdict(self.forklift),
-            "worker": asdict(self.worker)
+            "worker": asdict(self.worker),
+            "workers": [asdict(w) for w in self.workers]
         }
 
     def _slow_down(self, entity, target_speed, decel):
@@ -93,7 +110,7 @@ class WarehouseSimulator:
 
     def is_stopped(self):
         """비상 정지가 걸렸고 지게차와 작업자가 모두 멈췄으면 True"""
-        return self.response_state == "STOP" and self.forklift.speed == 0.0 and self.worker.speed == 0.0
+        return self.response_state == "STOP" and self.forklift.speed == 0.0 and all(w.speed == 0.0 for w in self.workers)
 
     def step(self, response_level=None):
         """0.1초(1프레임) 후의 객체 위치 업데이트 및 상태 반환"""
@@ -107,7 +124,8 @@ class WarehouseSimulator:
 
         if self.response_state == "STOP":
             self._slow_down(self.forklift, 0.0, BRAKE_DECEL)
-            self._slow_down(self.worker, 0.0, WORKER_STOP_DECEL)
+            for w in self.workers:
+                self._slow_down(w, 0.0, WORKER_STOP_DECEL)
         elif self.response_state == "SLOW":
             self._slow_down(self.forklift, WARNING_SPEED_LIMIT, BRAKE_DECEL)
         
@@ -122,9 +140,10 @@ class WarehouseSimulator:
         self.forklift.timestamp = self.current_time
         
         # 작업자 위치 업데이트
-        self.worker.x += self.worker.speed * math.cos(self.worker.heading) * self.dt
-        self.worker.y += self.worker.speed * math.sin(self.worker.heading) * self.dt
-        self.worker.timestamp = self.current_time
+        for w in self.workers:
+            w.x += w.speed * math.cos(w.heading) * self.dt
+            w.y += w.speed * math.sin(w.heading) * self.dt
+            w.timestamp = self.current_time
 
         # S05: 2.0초 시점부터 작업자가 +x 방향으로 돌아선다
         if self.scenario == "retreat" and self.current_time >= 2.0:
@@ -133,7 +152,8 @@ class WarehouseSimulator:
         return {
             "timestamp": self.current_time,
             "forklift": asdict(self.forklift),
-            "worker": asdict(self.worker)
+            "worker": asdict(self.worker),
+            "workers": [asdict(w) for w in self.workers]
         }
 
 # 직접 실행 시 동작 테스트 (터미널에서 python simulator.py 입력)
